@@ -7,6 +7,7 @@
     xmlns:controls="clr-namespace:MaaWpfGui.Styles.Controls"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:dd="urn:gong-wpf-dragdrop"
+    xmlns:enums="clr-namespace:MaaWpfGui.Constants.Enums"
     xmlns:hc="https://handyorg.github.io/handycontrol"
     xmlns:helper="clr-namespace:MaaWpfGui.Helper"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -18,39 +19,41 @@
     mc:Ignorable="d">
     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
         <controls:GlobalConfigTip />
-        <StackPanel
-            Margin="8,10,0,5"
-            HorizontalAlignment="Center"
-            Orientation="Horizontal">
-            <controls:TextBlock Text="{DynamicResource Settings.Performance.UseGpuForInference}" />
-            <controls:TooltipBlock TooltipText="{DynamicResource Settings.Performance.UseGpuForInference.Tip}" />
+        <StackPanel Visibility="{c:Binding IsGpuSelectionVisible}">
+            <StackPanel
+                Margin="8,10,0,5"
+                HorizontalAlignment="Center"
+                Orientation="Horizontal">
+                <controls:TextBlock Text="{DynamicResource Settings.Performance.UseGpuForInference}" />
+                <controls:TooltipBlock TooltipText="{DynamicResource Settings.Performance.UseGpuForInference.Tip}" />
+            </StackPanel>
+            <hc:ComboBox
+                Grid.Row="0"
+                Grid.Column="1"
+                Width="250"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Background="{DynamicResource RegionBrushOpacity25}"
+                DisplayMemberPath="Display"
+                ItemsSource="{Binding GpuOptions}"
+                PreviewMouseWheel="{s:Action DisableComboBoxScrollWhenClosed,
+                                             Target={x:Type helper:MouseWheelHelper}}"
+                SelectedItem="{Binding ActiveGpuOption}">
+                <hc:ComboBox.ItemContainerStyle>
+                    <Style BasedOn="{StaticResource ComboBoxItemBaseStyle}" TargetType="{x:Type ComboBoxItem}">
+                        <Style.Triggers>
+                            <MultiDataTrigger>
+                                <MultiDataTrigger.Conditions>
+                                    <Condition Binding="{Binding IsDeprecated}" Value="True" />
+                                    <Condition Binding="{Binding DataContext.AllowDeprecatedGpu, RelativeSource={RelativeSource AncestorType=hc:ComboBox}}" Value="False" />
+                                </MultiDataTrigger.Conditions>
+                                <Setter Property="Visibility" Value="Collapsed" />
+                            </MultiDataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </hc:ComboBox.ItemContainerStyle>
+            </hc:ComboBox>
         </StackPanel>
-        <hc:ComboBox
-            Grid.Row="0"
-            Grid.Column="1"
-            Width="250"
-            HorizontalAlignment="Center"
-            VerticalAlignment="Center"
-            Background="{DynamicResource RegionBrushOpacity25}"
-            DisplayMemberPath="Display"
-            ItemsSource="{Binding GpuOptions}"
-            PreviewMouseWheel="{s:Action DisableComboBoxScrollWhenClosed,
-                                         Target={x:Type helper:MouseWheelHelper}}"
-            SelectedItem="{Binding ActiveGpuOption}">
-            <hc:ComboBox.ItemContainerStyle>
-                <Style BasedOn="{StaticResource ComboBoxItemBaseStyle}" TargetType="{x:Type ComboBoxItem}">
-                    <Style.Triggers>
-                        <MultiDataTrigger>
-                            <MultiDataTrigger.Conditions>
-                                <Condition Binding="{Binding IsDeprecated}" Value="True" />
-                                <Condition Binding="{Binding DataContext.AllowDeprecatedGpu, RelativeSource={RelativeSource AncestorType=hc:ComboBox}}" Value="False" />
-                            </MultiDataTrigger.Conditions>
-                            <Setter Property="Visibility" Value="Collapsed" />
-                        </MultiDataTrigger>
-                    </Style.Triggers>
-                </Style>
-            </hc:ComboBox.ItemContainerStyle>
-        </hc:ComboBox>
         <StackPanel
             Margin="8,15,0,5"
             HorizontalAlignment="Center"
@@ -64,12 +67,33 @@
             VerticalAlignment="Center"
             Background="{DynamicResource RegionBrushOpacity25}"
             DisplayMemberPath="Display"
-            IsEnabled="{Binding IsGpuEnabled}"
+            IsEnabled="{c:Binding 'IsGpuEnabled or !IsGpuSelectionVisible'}"
             ItemsSource="{Binding BackendOptions}"
             PreviewMouseWheel="{s:Action DisableComboBoxScrollWhenClosed,
                                          Target={x:Type helper:MouseWheelHelper}}"
             SelectedValue="{Binding ActiveBackend}"
-            SelectedValuePath="Value" />
+            SelectedValuePath="Value">
+            <hc:ComboBox.ItemContainerStyle>
+                <Style BasedOn="{StaticResource ComboBoxItemBaseStyle}" TargetType="{x:Type ComboBoxItem}">
+                    <Style.Triggers>
+                        <MultiDataTrigger>
+                            <MultiDataTrigger.Conditions>
+                                <Condition Binding="{Binding Value}" Value="{x:Static enums:InferenceBackend.OpenVINOCpu}" />
+                                <Condition Binding="{Binding DataContext.OpenVinoCpuAvailable, RelativeSource={RelativeSource AncestorType=hc:ComboBox}}" Value="False" />
+                            </MultiDataTrigger.Conditions>
+                            <Setter Property="IsEnabled" Value="False" />
+                        </MultiDataTrigger>
+                        <MultiDataTrigger>
+                            <MultiDataTrigger.Conditions>
+                                <Condition Binding="{Binding Value}" Value="{x:Static enums:InferenceBackend.OpenVINONpu}" />
+                                <Condition Binding="{Binding DataContext.OpenVinoNpuAvailable, RelativeSource={RelativeSource AncestorType=hc:ComboBox}}" Value="False" />
+                            </MultiDataTrigger.Conditions>
+                            <Setter Property="IsEnabled" Value="False" />
+                        </MultiDataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </hc:ComboBox.ItemContainerStyle>
+        </hc:ComboBox>
         <StackPanel
             Margin="10"
             HorizontalAlignment="Center"

@@ -61,6 +61,42 @@ if(WIN32)
     endif()
 endif()
 
+# Intel OpenVINO: native OCR (CPU/NPU) plus the ONNX Runtime execution provider.
+# Optional so builds without the SDK keep working; the GPU backends stay available.
+if(NOT ANDROID)
+    find_package(OpenVINO CONFIG QUIET COMPONENTS Runtime ONNX)
+    if(OpenVINO_FOUND)
+        target_link_libraries(MaaCore openvino::runtime openvino::frontend::onnx)
+        target_compile_definitions(MaaCore PRIVATE MAA_WITH_OPENVINO=1)
+        message(STATUS "MaaCore: OpenVINO backend enabled (${OpenVINO_VERSION})")
+
+        if(WIN32)
+            get_target_property(_ov_runtime_dll openvino::runtime IMPORTED_LOCATION_RELEASE)
+            if(NOT _ov_runtime_dll)
+                get_target_property(_ov_runtime_dll openvino::runtime IMPORTED_LOCATION_RELWITHDEBINFO)
+            endif()
+            if(NOT _ov_runtime_dll)
+                get_target_property(_ov_runtime_dll openvino::runtime IMPORTED_LOCATION)
+            endif()
+
+            if(_ov_runtime_dll)
+                get_filename_component(_ov_bin_dir "${_ov_runtime_dll}" DIRECTORY)
+                file(GLOB _ov_runtime_files "${_ov_bin_dir}/openvino*.dll" "${_ov_bin_dir}/tbb*.dll")
+                add_custom_command(
+                    TARGET MaaCore
+                    POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_ov_runtime_files}
+                            $<TARGET_FILE_DIR:MaaCore>
+                    COMMAND_EXPAND_LISTS)
+            else()
+                message(WARNING "OpenVINO runtime DLL location could not be resolved; copy it next to MaaCore.dll manually")
+            endif()
+        endif()
+    else()
+        message(STATUS "MaaCore: OpenVINO backend disabled (OpenVINO not found)")
+    endif()
+endif()
+
 if(LINUX)
     target_link_libraries(MaaCore pthread dl)
 endif()

@@ -13,7 +13,7 @@
 
 std::optional<int> asst::GpuDeviceSelector::resolve_device_id() const
 {
-    if (!m_adapter_luid) {
+    if (m_backend == InferenceBackend::OpenVINO || !m_adapter_luid) {
         return m_device_id;
     }
 

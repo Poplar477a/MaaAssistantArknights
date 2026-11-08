@@ -31,4 +31,14 @@ public enum InferenceBackend
     /// Google Dawn WebGPU 后端（实验性）。
     /// </summary>
     WebGPU = 2,
+
+    /// <summary>
+    /// Intel OpenVINO 后端，使用 CPU 设备。
+    /// </summary>
+    OpenVINOCpu = 3,
+
+    /// <summary>
+    /// Intel OpenVINO 后端，使用 NPU 设备。
+    /// </summary>
+    OpenVINONpu = 4,
 }

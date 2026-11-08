@@ -34,6 +34,7 @@ public class PerformanceUserControlModel : PropertyChangedBase
     {
         Instance = new();
         LocalizationHelper.LanguageChanged += Instance.RefreshLocalization;
+        AsstProxy.OpenVinoAvailabilityChanged += Instance.RefreshOpenVinoAvailability;
     }
 
     public static PerformanceUserControlModel Instance { get; }
@@ -65,7 +66,9 @@ public class PerformanceUserControlModel : PropertyChangedBase
     public LocalizedObservableList<InferenceBackend> BackendOptions { get; } = new(
         (InferenceBackend.Auto, "InferenceBackendAuto"),
         (InferenceBackend.DirectML, "InferenceBackendDirectML"),
-        (InferenceBackend.WebGPU, "InferenceBackendWebGpu"));
+        (InferenceBackend.WebGPU, "InferenceBackendWebGpu"),
+        (InferenceBackend.OpenVINOCpu, "InferenceBackendOpenVinoCpu"),
+        (InferenceBackend.OpenVINONpu, "InferenceBackendOpenVinoNpu"));
 
     public InferenceBackend ActiveBackend
     {
@@ -79,8 +82,21 @@ public class PerformanceUserControlModel : PropertyChangedBase
 
             ConfigFactory.Root.Gui.Performance.Backend = value;
             NotifyOfPropertyChange();
+            NotifyOfPropertyChange(nameof(IsGpuSelectionVisible));
             SettingsViewModel.AskRestartToApplySettings();
         }
+    }
+
+    public bool IsGpuSelectionVisible => ActiveBackend is not (InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu);
+
+    public bool OpenVinoCpuAvailable => !AsstProxy.OpenVinoProbed || AsstProxy.OpenVinoCpuAvailable;
+
+    public bool OpenVinoNpuAvailable => !AsstProxy.OpenVinoProbed || AsstProxy.OpenVinoNpuAvailable;
+
+    private void RefreshOpenVinoAvailability()
+    {
+        NotifyOfPropertyChange(nameof(OpenVinoCpuAvailable));
+        NotifyOfPropertyChange(nameof(OpenVinoNpuAvailable));
     }
 
     /// <summary>

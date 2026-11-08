@@ -112,6 +112,16 @@ bool ::AsstExtAPI::set_static_option(StaticOptionKey key, const std::string& val
         CharOcr::get_instance().use_gpu(*selector);
         return true;
     } break;
+    case StaticOptionKey::OpenVINOProbe: {
+        if (value == "npu") {
+            return OnnxSessions::probe_openvino(OpenVINODevice::NPU);
+        }
+        if (value == "cpu") {
+            return OnnxSessions::probe_openvino(OpenVINODevice::CPU);
+        }
+        Log.error(__FUNCTION__, "| invalid OpenVINO probe device:", value);
+        return false;
+    } break;
     default:
         Log.error(__FUNCTION__, "| unknown key:", static_cast<int>(key));
         break;

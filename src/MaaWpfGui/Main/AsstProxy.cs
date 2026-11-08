@@ -632,6 +632,11 @@ public class AsstProxy
             return;
         }
 
+        if (ConfigFactory.Root.Gui.Performance.Backend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu)
+        {
+            return;
+        }
+
         if (GpuOption.GetCurrent() is not GpuOption.EnableOption x)
         {
             return;
@@ -674,6 +679,39 @@ public class AsstProxy
         }
     }
 
+    public static bool OpenVinoCpuAvailable { get; private set; }
+
+    public static bool OpenVinoNpuAvailable { get; private set; }
+
+    public static bool OpenVinoProbed { get; private set; }
+
+    public static event Action? OpenVinoAvailabilityChanged;
+
+    private void ProbeOpenVino()
+    {
+        if (OpenVinoProbed)
+        {
+            return;
+        }
+
+        OpenVinoProbed = true;
+        try
+        {
+            OpenVinoCpuAvailable = AsstSetStaticOption(AsstStaticOptionKey.OpenVINOProbe, "cpu");
+            OpenVinoNpuAvailable = AsstSetStaticOption(AsstStaticOptionKey.OpenVINOProbe, "npu");
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning(ex, "OpenVINO capability probe failed");
+        }
+
+        _logger.Information(
+            "OpenVINO availability: CPU={Cpu}, NPU={Npu}",
+            OpenVinoCpuAvailable,
+            OpenVinoNpuAvailable);
+        OpenVinoAvailabilityChanged?.Invoke();
+    }
+
     /// <summary>
     /// 初始化。
     /// </summary>
@@ -687,16 +725,29 @@ public class AsstProxy
             return;
         }
 
-        if (GpuOption.GetCurrent() is GpuOption.EnableOption x)
+        ProbeOpenVino();
+
+        var backend = ConfigFactory.Root.Gui.Performance.Backend;
+        string? selector = backend switch
+        {
+            InferenceBackend.OpenVINOCpu => "openvino:cpu",
+            InferenceBackend.OpenVINONpu => "openvino:npu",
+            _ => null,
+        };
+
+        if (selector is null && GpuOption.GetCurrent() is GpuOption.EnableOption x)
         {
             LogGpuStatus();
-            var backend = ConfigFactory.Root.Gui.Performance.Backend;
-            var selector = backend switch
+            selector = backend switch
             {
                 InferenceBackend.WebGPU => $"webgpu:{x.DeviceSelector}",
                 InferenceBackend.DirectML => $"directml:{x.DeviceSelector}",
                 _ => x.DeviceSelector,
             };
+        }
+
+        if (selector is not null)
+        {
             AsstSetStaticOption(AsstStaticOptionKey.GpuOCR, selector);
         }
 
@@ -4234,6 +4285,11 @@ public enum AsstStaticOptionKey
     /// 用GPU进行OCR
     /// </summary>
     GpuOCR,
+
+    /// <summary>
+    /// 查询 OpenVINO 设备是否可用，值为 "cpu" 或 "npu"
+    /// </summary>
+    OpenVINOProbe,
 }
 
 public enum InstanceOptionKey

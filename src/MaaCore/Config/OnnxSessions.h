@@ -33,6 +33,11 @@ public:
     bool use_cpu();
     bool use_gpu(GpuDeviceSelector selector);
 
+    // Pure capability query: never changes the current device. Returns false
+    // when the loaded onnxruntime build lacks the OpenVINO provider or the
+    // requested OpenVINO device cannot be initialized.
+    static bool probe_openvino(OpenVINODevice device);
+
 private:
     // 以下内部函数均要求调用方已持有 m_mutex
     Ort::Session& get_or_create(const std::string& name);

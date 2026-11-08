@@ -39,7 +39,9 @@ bool asst::OnnxSessions::load(const std::filesystem::path& path)
         }
     }
 
-    if (gpu_enabled && m_gpu_selector && m_gpu_selector->backend() == InferenceBackend::WebGPU &&
+    if (gpu_enabled && m_gpu_selector &&
+        (m_gpu_selector->backend() == InferenceBackend::WebGPU ||
+         m_gpu_selector->backend() == InferenceBackend::OpenVINO) &&
         !m_sessions.contains(name)) {
         warmup_locked(name);
     }
@@ -94,7 +96,7 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
         return;
     }
 
-    Log.error(__FUNCTION__, "WebGPU warmup failed for", name, "; falling back to CPU mode");
+    Log.error(__FUNCTION__, "accelerator warmup failed for", name, "; falling back to CPU mode");
     m_sessions.erase(name);
     reset_session_options();
     m_gpu_selector = std::nullopt;
@@ -278,6 +280,7 @@ bool asst::OnnxSessions::initialize_gpu_options()
     bool support_coreml = false;
 #endif
     bool support_webgpu = false;
+    bool support_openvino = false;
     for (const auto& provider : all_providers) {
         if (provider == "CUDAExecutionProvider") {
             support_cuda = true;
@@ -294,6 +297,9 @@ bool asst::OnnxSessions::initialize_gpu_options()
 #endif
         else if (provider == "WebGpuExecutionProvider") {
             support_webgpu = true;
+        }
+        else if (provider == "OpenVINOExecutionProvider") {
+            support_openvino = true;
         }
     }
 
@@ -322,6 +328,39 @@ bool asst::OnnxSessions::initialize_gpu_options()
         }
         else {
             LogError << "WebGPU execution provider requested but not available in this build";
+            return false;
+        }
+    }
+    else if (backend == InferenceBackend::OpenVINO) {
+        if (support_openvino) {
+            const bool npu = m_gpu_selector->openvino_device() == OpenVINODevice::NPU;
+            std::string device_type = npu ? "NPU" : "CPU";
+            if (*device_id > 0) {
+                device_type += "." + std::to_string(*device_id);
+            }
+
+            std::unordered_map<std::string, std::string> ep_options {
+                { "device_type", std::move(device_type) },
+                { "precision", npu ? "FP16" : "FP32" },
+            };
+            // NPU only accepts static shapes. The flag rewrites the two dynamic
+            // batch dimensions (skill_ready_cls / BlackFlow_corridor_net) to 1.
+            if (npu) {
+                ep_options.emplace("disable_dynamic_shapes", "true");
+            }
+
+            try {
+                m_options.AppendExecutionProvider_OpenVINO_V2(ep_options);
+                provider_configured = true;
+                LogInfo << "OpenVINO execution provider enabled on" << ep_options.at("device_type");
+            }
+            catch (const Ort::Exception& ex) {
+                LogError << "Failed to append OpenVINO execution provider:" << ex.what();
+                return false;
+            }
+        }
+        else {
+            LogError << "OpenVINO execution provider requested but not available in this build";
             return false;
         }
     }
@@ -379,6 +418,37 @@ bool asst::OnnxSessions::initialize_gpu_options()
 
     gpu_options_initialized = true;
     return true;
+}
+
+bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
+{
+    const auto all_providers = Ort::GetAvailableProviders();
+    if (std::ranges::find(all_providers, "OpenVINOExecutionProvider") == all_providers.end()) {
+        Log.info(__FUNCTION__, "| OpenVINO execution provider unavailable");
+        return false;
+    }
+
+    // SessionOptions needs a registered default logger; the singleton's Env is
+    // not reachable from this static query, so keep one probe-only Env alive.
+    static Ort::Env probe_env(ORT_LOGGING_LEVEL_WARNING, "openvino-probe");
+
+    const bool npu = device == OpenVINODevice::NPU;
+    try {
+        Ort::SessionOptions options;
+        std::unordered_map<std::string, std::string> ep_options {
+            { "device_type", npu ? "NPU" : "CPU" },
+        };
+        if (npu) {
+            ep_options.emplace("disable_dynamic_shapes", "true");
+        }
+        options.AppendExecutionProvider_OpenVINO_V2(ep_options);
+        Log.info(__FUNCTION__, "| OpenVINO", npu ? "NPU" : "CPU", "available");
+        return true;
+    }
+    catch (const std::exception& e) {
+        Log.warn(__FUNCTION__, "| OpenVINO", npu ? "NPU" : "CPU", "unavailable:", e.what());
+        return false;
+    }
 }
 
 asst::OnnxSessions::~OnnxSessions()
