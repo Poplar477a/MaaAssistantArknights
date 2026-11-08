@@ -83,11 +83,14 @@ public class PerformanceUserControlModel : PropertyChangedBase
             ConfigFactory.Root.Gui.Performance.Backend = value;
             NotifyOfPropertyChange();
             NotifyOfPropertyChange(nameof(IsGpuSelectionVisible));
+            NotifyOfPropertyChange(nameof(IsOpenVinoNpuSelected));
             SettingsViewModel.AskRestartToApplySettings();
         }
     }
 
     public bool IsGpuSelectionVisible => ActiveBackend is not (InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu);
+
+    public bool IsOpenVinoNpuSelected => ActiveBackend == InferenceBackend.OpenVINONpu;
 
     public bool OpenVinoCpuAvailable => !AsstProxy.OpenVinoProbed || AsstProxy.OpenVinoCpuAvailable;
 

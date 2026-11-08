@@ -94,6 +94,14 @@
                 </Style>
             </hc:ComboBox.ItemContainerStyle>
         </hc:ComboBox>
+        <TextBlock
+            MaxWidth="440"
+            Margin="8,8,8,0"
+            HorizontalAlignment="Center"
+            Foreground="{DynamicResource WarningBrush}"
+            Text="{DynamicResource InferenceBackendOpenVinoNpu.Warning}"
+            TextWrapping="Wrap"
+            Visibility="{c:Binding IsOpenVinoNpuSelected}" />
         <StackPanel
             Margin="10"
             HorizontalAlignment="Center"

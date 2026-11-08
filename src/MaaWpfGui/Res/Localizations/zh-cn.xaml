@@ -1306,8 +1306,9 @@ DEBUG 目录下保存的图片有数量限制，超出后会自动清理旧图�
     <system:String x:Key="InferenceBackend">推理后端</system:String>
     <system:String x:Key="InferenceBackendAuto">自动 (推荐)</system:String>
     <system:String x:Key="InferenceBackendDirectML">DirectML</system:String>
-    <system:String x:Key="InferenceBackendOpenVinoCpu">OpenVINO (CPU)</system:String>
-    <system:String x:Key="InferenceBackendOpenVinoNpu">OpenVINO (NPU)</system:String>
+    <system:String x:Key="InferenceBackendOpenVinoCpu">OpenVINO CPU (实验性)</system:String>
+    <system:String x:Key="InferenceBackendOpenVinoNpu">OpenVINO NPU (实验性)</system:String>
+    <system:String x:Key="InferenceBackendOpenVinoNpu.Warning">OpenVINO NPU 为实验性后端：需要可用的 Intel NPU 驱动；部分模型或驱动版本可能不兼容，可能崩溃或自动回退到 CPU。建议先小规模验证任务。</system:String>
     <system:String x:Key="InferenceBackendTip" xml:space="preserve">选择模型推理计算后端。&#10;自动模式会选择最成熟稳定的后端（DirectML）；WebGPU 仍处于实验阶段。OpenVINO 使用 Intel CPU/NPU，需要对应的驱动与运行时。</system:String>
     <system:String x:Key="InferenceBackendWebGpu">WebGPU (实验性)</system:String>
     <system:String x:Key="Infrast.ContinueTraining">训练完成后继续尝试专精当前技能</system:String>

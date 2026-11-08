@@ -751,6 +751,13 @@ public class AsstProxy
             AsstSetStaticOption(AsstStaticOptionKey.GpuOCR, selector);
         }
 
+        if (backend == InferenceBackend.OpenVINONpu)
+        {
+            var warning = LocalizationHelper.GetString("InferenceBackendOpenVinoNpu.Warning");
+            _logger.Warning("OpenVINO NPU is experimental: {Warning}", warning);
+            Instances.TaskQueueViewModel.AddLog(warning, UiLogColor.Warning);
+        }
+
         // 上次更新失败的持久标志存在时跳过资源加载（安装可能处于半更新状态），视同资源损坏走修复流程；
         // 失败标志随完整包安装清场移除，因此修复成功重启后本检查自然不再命中
         bool delegatedUpdateFailure = PendingUpdateApplier.TryReadDelegatedUpdateFailure(out string? delegatedUpdateFailureReason);
