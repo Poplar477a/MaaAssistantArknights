@@ -25,7 +25,7 @@
 #include <onnxruntime/coreml_provider_factory.h>
 #endif
 
-namespace
+namespace asst::onnx_session_detail
 {
 // Destroying an ORT session on the OpenVINO NPU can crash inside the plugin.
 // Keep abandoned sessions alive for the process lifetime instead.
@@ -51,7 +51,7 @@ bool asst::OnnxSessions::load(const std::filesystem::path& path)
         }
         else if (auto session = m_sessions.find(name); session != m_sessions.end()) {
             if (m_npu_inference_enabled.load(std::memory_order_relaxed)) {
-                abandon_ort_session(session->first, std::move(session->second));
+                onnx_session_detail::abandon_ort_session(session->first, std::move(session->second));
             }
             m_sessions.erase(session);
         }
@@ -122,7 +122,7 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
         // in m_session_users. Leak all cached sessions so those references stay
         // valid while the cache is rebuilt on CPU.
         for (auto& [session_name, session] : m_sessions) {
-            abandon_ort_session(session_name, std::move(session));
+            onnx_session_detail::abandon_ort_session(session_name, std::move(session));
         }
         m_sessions.clear();
         m_pending_reload.clear();
@@ -224,7 +224,7 @@ void asst::OnnxSessions::release(const std::string& name)
             // 持有期间模型路径变化过，最后一个引用释放后销毁旧会话，下次 acquire 按新路径重建
             if (auto iter = m_sessions.find(name); iter != m_sessions.end()) {
                 if (m_npu_inference_enabled.load(std::memory_order_relaxed)) {
-                    abandon_ort_session(iter->first, std::move(iter->second));
+                    onnx_session_detail::abandon_ort_session(iter->first, std::move(iter->second));
                 }
                 m_sessions.erase(iter);
             }
