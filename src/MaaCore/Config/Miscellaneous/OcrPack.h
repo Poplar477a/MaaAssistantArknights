@@ -30,6 +30,7 @@ public:
 
     void use_cpu()
     {
+        const std::lock_guard lock(m_recognize_mutex);
         m_gpu_selector = std::nullopt;
         m_gpu_active = false;
 #ifdef MAA_WITH_OPENVINO
@@ -39,6 +40,7 @@ public:
 
     void use_gpu(GpuDeviceSelector selector)
     {
+        const std::lock_guard lock(m_recognize_mutex);
         m_gpu_selector = std::move(selector);
 #ifdef MAA_WITH_OPENVINO
         release_openvino();

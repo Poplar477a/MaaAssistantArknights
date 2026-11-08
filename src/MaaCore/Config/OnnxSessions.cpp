@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <filesystem>
+#include <future>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -444,6 +446,20 @@ bool asst::OnnxSessions::initialize_gpu_options()
     return true;
 }
 
+static void run_probe_session(Ort::Session& session)
+{
+    std::array<float, 1 * 3 * 96 * 96> zeros {};
+    auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
+    const std::array<int64_t, 4> shape { 1, 3, 96, 96 };
+    auto input = Ort::Value::CreateTensor<float>(memory_info, zeros.data(), zeros.size(), shape.data(), shape.size());
+    Ort::AllocatorWithDefaultOptions allocator;
+    const auto input_name = session.GetInputNameAllocated(0, allocator);
+    const auto output_name = session.GetOutputNameAllocated(0, allocator);
+    const char* input_names[] = { input_name.get() };
+    const char* output_names[] = { output_name.get() };
+    session.Run(Ort::RunOptions { nullptr }, input_names, &input, 1, output_names, 1);
+}
+
 bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
 {
     const auto all_providers = Ort::GetAvailableProviders();
@@ -455,8 +471,18 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
     // SessionOptions needs a registered default logger; the singleton's Env is
     // not reachable from this static query, so keep one probe-only Env alive.
     static Ort::Env probe_env(ORT_LOGGING_LEVEL_WARNING, "openvino-probe");
+    static std::mutex probe_session_mutex;
+    static Ort::Session* npu_probe_session = nullptr;
 
     const bool npu = device == OpenVINODevice::NPU;
+
+    using namespace asst::utils::path_literals;
+    const auto model_path = UserDir.get() / "resource"_p / "onnx"_p / "deploy_direction_cls.onnx"_p;
+    if (!std::filesystem::exists(model_path)) {
+        LogError << __FUNCTION__ << "| probe model is missing:" << model_path;
+        return false;
+    }
+
     try {
         Ort::SessionOptions options;
         std::unordered_map<std::string, std::string> ep_options {
@@ -469,38 +495,34 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
 
         // The EP may register successfully while the device plugin still fails
         // on the first real session. Compile and run one small model so the GUI
-        // does not offer a device that will fall back to CPU.
-        using namespace asst::utils::path_literals;
-        const auto model_path = UserDir.get() / "resource"_p / "onnx"_p / "deploy_direction_cls.onnx"_p;
-        if (!std::filesystem::exists(model_path)) {
-            LogError << __FUNCTION__ << "| probe model is missing:" << model_path;
+        // does not offer a device that will fall back to CPU. Run it on a
+        // worker with a timeout: a hung NPU driver must not block startup.
+        auto future = std::async(std::launch::async, [npu, model_path, options = std::move(options)]() mutable -> bool {
+            if (npu) {
+                const std::lock_guard npu_lock(openvino_npu_mutex());
+                const std::lock_guard session_lock(probe_session_mutex);
+                if (npu_probe_session == nullptr) {
+                    // Keep the probe session alive: destroying an NPU ORT
+                    // session can crash inside the plugin.
+                    npu_probe_session = new Ort::Session(probe_env, model_path.c_str(), options);
+                }
+                run_probe_session(*npu_probe_session);
+            }
+            else {
+                Ort::Session session(probe_env, model_path.c_str(), options);
+                run_probe_session(session);
+            }
+            return true;
+        });
+
+        if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+            // Leak the future so its destructor does not block on a stuck probe.
+            (void)new std::future<bool>(std::move(future));
+            LogWarn << __FUNCTION__ << "| OpenVINO" << (npu ? "NPU" : "CPU") << "probe timed out";
             return false;
         }
-
-        const auto run_probe = [&](Ort::Session& session) {
-            std::array<float, 1 * 3 * 96 * 96> zeros {};
-            auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
-            const std::array<int64_t, 4> shape { 1, 3, 96, 96 };
-            auto input =
-                Ort::Value::CreateTensor<float>(memory_info, zeros.data(), zeros.size(), shape.data(), shape.size());
-            Ort::AllocatorWithDefaultOptions allocator;
-            const auto input_name = session.GetInputNameAllocated(0, allocator);
-            const auto output_name = session.GetOutputNameAllocated(0, allocator);
-            const char* input_names[] = { input_name.get() };
-            const char* output_names[] = { output_name.get() };
-            session.Run(Ort::RunOptions { nullptr }, input_names, &input, 1, output_names, 1);
-        };
-
-        if (npu) {
-            // Keep the probe session alive: destroying an NPU ORT session can
-            // crash inside the plugin, same as the normal session teardown.
-            auto* session = new Ort::Session(probe_env, model_path.c_str(), options);
-            const std::lock_guard npu_lock(openvino_npu_mutex());
-            run_probe(*session);
-        }
-        else {
-            Ort::Session session(probe_env, model_path.c_str(), options);
-            run_probe(session);
+        if (!future.get()) {
+            return false;
         }
 
         LogInfo << __FUNCTION__ << "| OpenVINO" << (npu ? "NPU" : "CPU") << "available";

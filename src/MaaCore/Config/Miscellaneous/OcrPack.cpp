@@ -343,15 +343,12 @@ OcrPack::~OcrPack()
 
 bool OcrPack::load(const std::filesystem::path& path)
 {
+    const std::lock_guard recognize_lock(m_recognize_mutex);
+
     LogTraceFunction;
     Log.info("load", path.lexically_relative(UserDir.get()));
 
-#ifdef MAA_WITH_OPENVINO
-    // Model or language-table paths may have changed; drop the compiled models
-    // and the character table so the next check_and_load rebuilds them.
-    release_openvino();
-    m_impl->ov_keys.clear();
-#endif
+    bool models_changed = false;
 
     using namespace asst::utils::path_literals;
     const auto det_dir = path / "det"_p;
@@ -360,12 +357,14 @@ bool OcrPack::load(const std::filesystem::path& path)
     if (std::filesystem::exists(det_model_file) && m_impl->det_model_path != det_model_file) {
         m_impl->det_model_path = det_model_file;
         m_impl->det = nullptr;
+        models_changed = true;
     }
     else if (m_impl->det_model_path.empty()) {
         const auto fallback_det_file = path.parent_path() / "PaddleOCR" / "det" / "inference.onnx"_p;
         if (std::filesystem::exists(fallback_det_file)) {
             m_impl->det_model_path = fallback_det_file;
             m_impl->det = nullptr;
+            models_changed = true;
         }
     }
 
@@ -376,11 +375,22 @@ bool OcrPack::load(const std::filesystem::path& path)
     if (std::filesystem::exists(rec_model_file) && m_impl->rec_model_path != rec_model_file) {
         m_impl->rec_model_path = rec_model_file;
         m_impl->rec = nullptr;
+        models_changed = true;
     }
     if (std::filesystem::exists(rec_label_file) && m_impl->rec_label_path != rec_label_file) {
         m_impl->rec_label_path = rec_label_file;
         m_impl->rec = nullptr;
+        models_changed = true;
     }
+
+#ifdef MAA_WITH_OPENVINO
+    if (models_changed) {
+        // Only drop compiled models when a path actually changed; reloading the
+        // same resource must not abandon a healthy NPU pipeline.
+        release_openvino();
+        m_impl->ov_keys.clear();
+    }
+#endif
 
     if (m_impl->det && m_impl->rec) {
         m_impl->ocr = std::make_unique<fastdeploy::pipeline::PPOCRv6>(m_impl->det.get(), m_impl->rec.get());
@@ -748,7 +758,7 @@ bool OcrPack::warmup()
 #ifdef MAA_WITH_OPENVINO
 void OcrPack::release_openvino()
 {
-    if (m_impl->ov_device == "NPU" && (m_impl->ov_det_ready || !m_impl->ov_rec_buckets.empty())) {
+    if (m_impl->ov_device.starts_with("NPU") && (m_impl->ov_det_ready || !m_impl->ov_rec_buckets.empty())) {
         // Destroying compiled NPU objects outside of process teardown can also
         // crash in the plugin; abandon them instead of releasing.
         abandon_openvino_objects();
@@ -848,7 +858,7 @@ bool OcrPack::create_openvino_pipeline()
 
     const auto warmup = [this](const std::string& device) {
         std::unique_lock<std::mutex> npu_lock;
-        if (device == "NPU") {
+        if (device.starts_with("NPU")) {
             npu_lock = std::unique_lock<std::mutex>(openvino_npu_mutex());
         }
 
@@ -873,7 +883,10 @@ bool OcrPack::create_openvino_pipeline()
         request.infer();
     };
 
-    const std::string requested_device = m_gpu_selector->openvino_device() == OpenVINODevice::NPU ? "NPU" : "CPU";
+    std::string requested_device = m_gpu_selector->openvino_device() == OpenVINODevice::NPU ? "NPU" : "CPU";
+    if (auto device_id = m_gpu_selector->resolve_device_id(); device_id && *device_id > 0) {
+        requested_device += "." + std::to_string(*device_id);
+    }
 
     try {
         compile_all(requested_device);
@@ -955,7 +968,7 @@ OcrPack::ResultsVec
             m_impl->ov_rec_in.data());
         {
             std::unique_lock<std::mutex> npu_lock;
-            if (m_impl->ov_device == "NPU") {
+            if (m_impl->ov_device.starts_with("NPU")) {
                 npu_lock = std::unique_lock<std::mutex>(openvino_npu_mutex());
             }
             bucket_iter->second.request.set_input_tensor(input);
@@ -1056,7 +1069,7 @@ OcrPack::ResultsVec
                 m_impl->ov_det_in.data());
             {
                 std::unique_lock<std::mutex> npu_lock;
-                if (m_impl->ov_device == "NPU") {
+                if (m_impl->ov_device.starts_with("NPU")) {
                     npu_lock = std::unique_lock<std::mutex>(openvino_npu_mutex());
                 }
                 m_impl->ov_det_req.set_input_tensor(det_tensor);

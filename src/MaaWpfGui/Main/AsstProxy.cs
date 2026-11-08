@@ -632,7 +632,7 @@ public class AsstProxy
             return;
         }
 
-        if (ConfigFactory.Root.Gui.Performance.Backend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu)
+        if (SettingsViewModel.PerformanceSettings.ActiveBackend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu)
         {
             return;
         }
@@ -727,7 +727,7 @@ public class AsstProxy
 
         ProbeOpenVino();
 
-        var backend = ConfigFactory.Root.Gui.Performance.Backend;
+        var backend = SettingsViewModel.PerformanceSettings.ActiveBackend;
         if (backend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu)
         {
             var available = backend == InferenceBackend.OpenVINOCpu ? OpenVinoCpuAvailable : OpenVinoNpuAvailable;
