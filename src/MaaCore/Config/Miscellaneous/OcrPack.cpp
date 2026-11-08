@@ -836,6 +836,10 @@ bool OcrPack::create_openvino_pipeline()
     m_impl->ov_props.clear();
     m_impl->ov_props.emplace(ov::hint::performance_mode(ov::hint::PerformanceMode::LATENCY));
 
+    // OpenVINO has no cancellable compile API. The capability probe runs before
+    // resource loading, so a broken or hung device is rejected before reaching
+    // this point; a driver that stalls only on a specific model remains a
+    // documented limitation.
     const auto compile_all = [this](const std::string& device) {
         const ov::Shape det_shape { 1, 3, ocr_ov::DetHeight, ocr_ov::DetWidth };
         auto det_model = ocr_ov::read_static_model(ocr_ov::shared_core(), m_impl->det_model_path, det_shape);

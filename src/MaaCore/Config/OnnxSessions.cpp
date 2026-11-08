@@ -25,6 +25,17 @@
 #include <onnxruntime/coreml_provider_factory.h>
 #endif
 
+namespace
+{
+// Destroying an ORT session on the OpenVINO NPU can crash inside the plugin.
+// Keep abandoned sessions alive for the process lifetime instead.
+void abandon_ort_session(std::string name, Ort::Session session)
+{
+    static auto* abandoned = new std::vector<std::pair<std::string, Ort::Session>>();
+    abandoned->emplace_back(std::move(name), std::move(session));
+}
+}
+
 bool asst::OnnxSessions::load(const std::filesystem::path& path)
 {
     LogTraceFunction;
@@ -38,8 +49,11 @@ bool asst::OnnxSessions::load(const std::filesystem::path& path)
         if (m_session_users.contains(name)) {
             m_pending_reload.insert(name);
         }
-        else {
-            m_sessions.erase(name);
+        else if (auto session = m_sessions.find(name); session != m_sessions.end()) {
+            if (m_npu_inference_enabled.load(std::memory_order_relaxed)) {
+                abandon_ort_session(session->first, std::move(session->second));
+            }
+            m_sessions.erase(session);
         }
     }
 
@@ -102,13 +116,23 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
     }
 
     Log.error(__FUNCTION__, "accelerator warmup failed for", name, "; falling back to CPU mode");
-    m_sessions.erase(name);
+    const bool leak_npu_sessions = m_npu_inference_enabled.load(std::memory_order_relaxed);
+    if (auto iter = m_sessions.find(name); iter != m_sessions.end()) {
+        if (leak_npu_sessions) {
+            abandon_ort_session(iter->first, std::move(iter->second));
+        }
+        m_sessions.erase(iter);
+    }
     for (auto iter = m_sessions.begin(); iter != m_sessions.end();) {
         if (m_session_users.contains(iter->first)) {
-            // The holder still references the old accelerator session; destroy
-            // and recreate it on CPU once the last reference is released.
+            // The holder still references the old accelerator session; leak it
+            // and recreate on CPU once the last reference is released.
             m_pending_reload.insert(iter->first);
             ++iter;
+        }
+        else if (leak_npu_sessions) {
+            abandon_ort_session(iter->first, std::move(iter->second));
+            iter = m_sessions.erase(iter);
         }
         else {
             iter = m_sessions.erase(iter);
@@ -197,7 +221,12 @@ void asst::OnnxSessions::release(const std::string& name)
         m_session_users.erase(found);
         if (m_pending_reload.erase(name) > 0) {
             // 持有期间模型路径变化过，最后一个引用释放后销毁旧会话，下次 acquire 按新路径重建
-            m_sessions.erase(name);
+            if (auto iter = m_sessions.find(name); iter != m_sessions.end()) {
+                if (m_npu_inference_enabled.load(std::memory_order_relaxed)) {
+                    abandon_ort_session(iter->first, std::move(iter->second));
+                }
+                m_sessions.erase(iter);
+            }
             Log.info(__FUNCTION__, "stale session destroyed after last release", name);
         }
         if (!gpu_enabled && m_sessions.empty()) {
@@ -251,7 +280,9 @@ bool asst::OnnxSessions::use_cpu_locked()
     m_gpu_selector = std::nullopt;
     gpu_enabled = false;
     gpu_options_initialized = false;
-    m_npu_inference_enabled.store(false, std::memory_order_relaxed);
+    // Guarded by the early return above, so this only runs when no session
+    // (and therefore no NPU holder) remains.
+    m_npu_inference_enabled.store(!m_sessions.empty(), std::memory_order_relaxed);
     return true;
 }
 
@@ -499,7 +530,9 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
         // worker with a timeout: a hung NPU driver must not block startup.
         auto future = std::async(std::launch::async, [npu, model_path, options = std::move(options)]() mutable -> bool {
             if (npu) {
-                const std::lock_guard npu_lock(openvino_npu_mutex());
+                // Do not take openvino_npu_mutex here: a hung probe holding it
+                // would block all later NPU inference. The probe runs right
+                // after resource loading, before tasks start.
                 const std::lock_guard session_lock(probe_session_mutex);
                 if (npu_probe_session == nullptr) {
                     // Keep the probe session alive: destroying an NPU ORT
@@ -512,6 +545,9 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
                 Ort::Session session(probe_env, model_path.c_str(), options);
                 run_probe_session(session);
             }
+            // ORT does not expose per-node device assignment. A successful run
+            // through the OpenVINO EP is the strongest check available here;
+            // the native OCR path logs the real EXECUTION_DEVICES.
             return true;
         });
 

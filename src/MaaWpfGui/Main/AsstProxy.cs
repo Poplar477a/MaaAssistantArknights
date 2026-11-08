@@ -26,6 +26,7 @@ using System.Net.Http;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls.Primitives;
@@ -687,14 +688,15 @@ public class AsstProxy
 
     public static event Action? OpenVinoAvailabilityChanged;
 
+    private static int _openVinoProbeState;
+
     private void ProbeOpenVino()
     {
-        if (OpenVinoProbed)
+        if (Interlocked.CompareExchange(ref _openVinoProbeState, 1, 0) != 0)
         {
             return;
         }
 
-        OpenVinoProbed = true;
         try
         {
             OpenVinoCpuAvailable = AsstSetStaticOption(AsstStaticOptionKey.OpenVINOProbe, "cpu");
@@ -705,11 +707,31 @@ public class AsstProxy
             _logger.Warning(ex, "OpenVINO capability probe failed");
         }
 
+        OpenVinoProbed = true;
         _logger.Information(
             "OpenVINO availability: CPU={Cpu}, NPU={Npu}",
             OpenVinoCpuAvailable,
             OpenVinoNpuAvailable);
-        OpenVinoAvailabilityChanged?.Invoke();
+        Application.Current?.Dispatcher.Invoke(() =>
+        {
+            var backend = SettingsViewModel.PerformanceSettings.ActiveBackend;
+            if (backend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu)
+            {
+                var available = backend == InferenceBackend.OpenVINOCpu ? OpenVinoCpuAvailable : OpenVinoNpuAvailable;
+                if (!available)
+                {
+                    var warning = LocalizationHelper.GetString("InferenceBackend.Unavailable.Warning");
+                    _logger.Warning(
+                        "Saved OpenVINO backend {Backend} is unavailable; falling back to Auto. {Warning}",
+                        backend,
+                        warning);
+                    Instances.TaskQueueViewModel.AddLog(warning, UiLogColor.Warning);
+                    ConfigFactory.Root.Gui.Performance.Backend = InferenceBackend.Auto;
+                }
+            }
+
+            OpenVinoAvailabilityChanged?.Invoke();
+        });
     }
 
     /// <summary>
@@ -725,22 +747,7 @@ public class AsstProxy
             return;
         }
 
-        ProbeOpenVino();
-
         var backend = SettingsViewModel.PerformanceSettings.ActiveBackend;
-        if (backend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu)
-        {
-            var available = backend == InferenceBackend.OpenVINOCpu ? OpenVinoCpuAvailable : OpenVinoNpuAvailable;
-            if (!available)
-            {
-                var warning = LocalizationHelper.GetString("InferenceBackend.Unavailable.Warning");
-                _logger.Warning("Saved OpenVINO backend {Backend} is unavailable; falling back to Auto. {Warning}", backend, warning);
-                Instances.TaskQueueViewModel.AddLog(warning, UiLogColor.Warning);
-                backend = InferenceBackend.Auto;
-                ConfigFactory.Root.Gui.Performance.Backend = backend;
-            }
-        }
-
         string? selector = backend switch
         {
             InferenceBackend.OpenVINOCpu => "openvino:cpu",
@@ -782,6 +789,11 @@ public class AsstProxy
         {
             _handle = handle;
         }
+
+        // Capability probing compiles a small model and may block on a faulty
+        // NPU driver; keep it off the startup path. Resources are loaded now,
+        // so the probe model is available.
+        _ = Task.Run(ProbeOpenVino);
 
         if (loaded == false || handle == AsstHandle.Zero)
         {
