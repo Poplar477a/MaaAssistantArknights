@@ -32,6 +32,8 @@ namespace asst::onnx_session_detail
 void abandon_ort_session(std::string name, Ort::Session session)
 {
     static auto* abandoned = new std::vector<std::pair<std::string, Ort::Session>>();
+    static std::mutex abandoned_mutex;
+    const std::lock_guard lock(abandoned_mutex);
     abandoned->emplace_back(std::move(name), std::move(session));
 }
 }
@@ -518,8 +520,11 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
     using namespace asst::utils::path_literals;
     const auto model_path = UserDir.get() / "resource"_p / "onnx"_p / "deploy_direction_cls.onnx"_p;
     if (!std::filesystem::exists(model_path)) {
-        LogError << __FUNCTION__ << "| probe model is missing:" << model_path;
-        return false;
+        // The resource may live elsewhere (or not be installed yet). Don't turn
+        // that into "device unavailable"; fall back to the EP registration check.
+        LogWarn << __FUNCTION__ << "| probe model is missing:" << model_path << "EP registration only";
+        LogInfo << __FUNCTION__ << "| OpenVINO" << (npu ? "NPU" : "CPU") << "available (registration only)";
+        return true;
     }
 
     try {

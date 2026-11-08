@@ -858,6 +858,10 @@ bool OcrPack::create_openvino_pipeline()
     // this point; a driver that stalls only on a specific model remains a
     // documented limitation.
     const auto compile_all = [this](const std::string& device) {
+        std::unique_lock<std::mutex> npu_lock;
+        if (device.starts_with("NPU")) {
+            npu_lock = std::unique_lock<std::mutex>(openvino_npu_mutex());
+        }
         const ov::Shape det_shape { 1, 3, ocr_ov::DetHeight, ocr_ov::DetWidth };
         auto det_model = ocr_ov::read_static_model(ocr_ov::shared_core(), m_impl->det_model_path, det_shape);
         m_impl->ov_det_model = ocr_ov::shared_core().compile_model(det_model, device, m_impl->ov_props);
