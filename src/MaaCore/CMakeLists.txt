@@ -63,7 +63,8 @@ endif()
 
 # Intel OpenVINO: native OCR (CPU/NPU) plus the ONNX Runtime execution provider.
 # Optional so builds without the SDK keep working; the GPU backends stay available.
-if(NOT ANDROID)
+# Restricted to Windows/Linux, matching the MaaDeps port's supported platforms.
+if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(OpenVINO CONFIG QUIET COMPONENTS Runtime ONNX)
     if(OpenVINO_FOUND)
         # OpenVINO only ships a release CRT. Linking it into a /MDd Debug build

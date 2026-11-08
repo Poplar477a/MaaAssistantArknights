@@ -102,24 +102,38 @@ std::string
         const float* row = logits + static_cast<std::size_t>(step) * static_cast<std::size_t>(classes);
         int best = 0;
         float best_value = row[0];
+        float row_sum = row[0];
         for (int c = 1; c < classes; ++c) {
+            row_sum += row[c];
             if (row[c] > best_value) {
                 best_value = row[c];
                 best = c;
             }
         }
+
+        // Some exports emit probabilities (sum ~= 1) while others emit logits;
+        // only the former can be averaged directly as a confidence score.
+        float confidence = best_value;
+        if (best_value > 1.0F || row_sum < 0.9F || row_sum > 1.1F) {
+            double denominator = 0.0;
+            for (int c = 0; c < classes; ++c) {
+                denominator += std::exp(static_cast<double>(row[c] - best_value));
+            }
+            confidence = denominator > 0.0 ? static_cast<float>(1.0 / denominator) : 0.0F;
+        }
+
         if (best != 0 && best != prev) {
             const int index = best - 1;
             if (index >= 0 && index < static_cast<int>(keys.size())) {
                 text += keys[index];
-                score_sum += best_value;
+                score_sum += confidence;
                 ++score_count;
             }
             else if (index == static_cast<int>(keys.size())) {
                 // PaddleOCR appends one extra space class after the keys table;
                 // dropping it strips spaces from recognized sentences.
                 text += ' ';
-                score_sum += best_value;
+                score_sum += confidence;
                 ++score_count;
             }
         }
@@ -1086,9 +1100,18 @@ OcrPack::ResultsVec
             const int prob_w = static_cast<int>(det_shape[det_shape.size() - 1]);
 
             cv::Mat prob(prob_h, prob_w, CV_32FC1, const_cast<float*>(det_output.data<const float>()));
-            cv::Mat bitmap;
-            cv::threshold(prob, bitmap, ocr_ov::DetBinThreshold, 255.0, cv::THRESH_BINARY);
-            bitmap.convertTo(bitmap, CV_8UC1);
+            // Match the NCNN detector: quantize to 8-bit first (truncating),
+            // then threshold at 0.2 * 255 so borderline probabilities produce
+            // the same contours on both backends.
+            cv::Mat bitmap(prob_h, prob_w, CV_8UC1);
+            for (int y = 0; y < prob_h; ++y) {
+                const float* src = prob.ptr<float>(y);
+                unsigned char* dst = bitmap.ptr<unsigned char>(y);
+                for (int x = 0; x < prob_w; ++x) {
+                    dst[x] = static_cast<unsigned char>(src[x] * 255.0F);
+                }
+            }
+            cv::threshold(bitmap, bitmap, ocr_ov::DetBinThreshold * 255.0F, 255.0, cv::THRESH_BINARY);
 
             const auto boxes = db_postprocess::boxes_from_bitmap(
                 prob,
