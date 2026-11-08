@@ -204,6 +204,54 @@ std::shared_ptr<ov::Model> read_static_model(ov::Core& core, const std::filesyst
     }
     return model;
 }
+
+// EXECUTION_DEVICES is the authoritative answer to "which device is this
+// compiled model actually running on"; FULL_DEVICE_NAME identifies the
+// physical unit. NPU returns a scalar string for EXECUTION_DEVICES while CPU
+// returns a string vector, so read it as ov::Any instead of the typed property.
+std::string any_to_string(const ov::Any& value)
+{
+    if (value.is<std::string>()) {
+        return value.as<std::string>();
+    }
+    if (value.is<std::vector<std::string>>()) {
+        std::string joined;
+        for (const auto& item : value.as<std::vector<std::string>>()) {
+            if (!joined.empty()) {
+                joined += ",";
+            }
+            joined += item;
+        }
+        return joined;
+    }
+    try {
+        return value.as<std::string>();
+    }
+    catch (...) {
+        return "?";
+    }
+}
+
+std::string device_summary(const ov::CompiledModel& model, const std::string& device)
+{
+    std::string execution;
+    try {
+        execution = any_to_string(model.get_property("EXECUTION_DEVICES"));
+    }
+    catch (const std::exception& e) {
+        execution = std::string("unknown: ") + e.what();
+    }
+
+    std::string full_name;
+    try {
+        full_name = shared_core().get_property(device, "FULL_DEVICE_NAME").as<std::string>();
+    }
+    catch (...) {
+        full_name = "?";
+    }
+
+    return execution + " [" + full_name + "]";
+}
 } // namespace ocr_ov
 #endif
 
@@ -708,11 +756,13 @@ bool OcrPack::create_openvino_pipeline()
         m_impl->ov_det_model = ocr_ov::shared_core().compile_model(det_model, device, m_impl->ov_props);
         m_impl->ov_det_req = m_impl->ov_det_model.create_infer_request();
         m_impl->ov_det_ready = true;
+        LogInfo << "OpenVINO det execution devices" << ocr_ov::device_summary(m_impl->ov_det_model, device);
 
         const ov::Shape rec_shape { 1, 3, ocr_ov::RecHeight, ocr_ov::RecWidthShort };
         auto rec_model = ocr_ov::read_static_model(ocr_ov::shared_core(), m_impl->rec_model_path, rec_shape);
         auto compiled = ocr_ov::shared_core().compile_model(rec_model, device, m_impl->ov_props);
         auto request = compiled.create_infer_request();
+        LogInfo << "OpenVINO rec execution devices" << ocr_ov::device_summary(compiled, device);
         m_impl->ov_rec_buckets.erase(ocr_ov::RecWidthShort);
         m_impl->ov_rec_buckets.emplace(
             ocr_ov::RecWidthShort,
@@ -800,8 +850,9 @@ OcrPack::ResultsVec OcrPack::recognize_openvino(
             auto model = ocr_ov::read_static_model(ocr_ov::shared_core(), m_impl->rec_model_path, shape);
             auto compiled = ocr_ov::shared_core().compile_model(model, m_impl->ov_device, m_impl->ov_props);
             auto request = compiled.create_infer_request();
+            LogInfo << "OpenVINO extra rec bucket" << width << "execution devices"
+                    << ocr_ov::device_summary(compiled, m_impl->ov_device);
             m_impl->ov_rec_buckets.emplace(width, Impl::RecBucket { std::move(compiled), std::move(request) });
-            LogInfo << __FUNCTION__ << "compiled extra rec bucket" << width << "on" << m_impl->ov_device;
             return true;
         }
         catch (const std::exception& e) {
