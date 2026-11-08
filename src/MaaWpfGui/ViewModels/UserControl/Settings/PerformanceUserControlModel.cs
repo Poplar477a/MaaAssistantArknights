@@ -73,8 +73,8 @@ public class PerformanceUserControlModel : PropertyChangedBase
         (InferenceBackend.Auto, "InferenceBackendAuto"),
         (InferenceBackend.DirectML, "InferenceBackendDirectML"),
         (InferenceBackend.WebGPU, "InferenceBackendWebGpu"),
-        (InferenceBackend.OpenVINOCpu, "InferenceBackendOpenVinoCpu"),
-        (InferenceBackend.OpenVINONpu, "InferenceBackendOpenVinoNpu"));
+        (InferenceBackend.OpenVINOCpu, "InferenceBackend.OpenVinoCpu"),
+        (InferenceBackend.OpenVINONpu, "InferenceBackend.OpenVinoNpu"));
 
     public InferenceBackend ActiveBackend
     {

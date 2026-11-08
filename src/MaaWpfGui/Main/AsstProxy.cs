@@ -728,6 +728,19 @@ public class AsstProxy
         ProbeOpenVino();
 
         var backend = ConfigFactory.Root.Gui.Performance.Backend;
+        if (backend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu)
+        {
+            var available = backend == InferenceBackend.OpenVINOCpu ? OpenVinoCpuAvailable : OpenVinoNpuAvailable;
+            if (!available)
+            {
+                var warning = LocalizationHelper.GetString("InferenceBackend.Unavailable.Warning");
+                _logger.Warning("Saved OpenVINO backend {Backend} is unavailable; falling back to Auto. {Warning}", backend, warning);
+                Instances.TaskQueueViewModel.AddLog(warning, UiLogColor.Warning);
+                backend = InferenceBackend.Auto;
+                ConfigFactory.Root.Gui.Performance.Backend = backend;
+            }
+        }
+
         string? selector = backend switch
         {
             InferenceBackend.OpenVINOCpu => "openvino:cpu",
@@ -746,14 +759,14 @@ public class AsstProxy
             };
         }
 
-        if (selector is not null)
+        if (selector is not null && !AsstSetStaticOption(AsstStaticOptionKey.GpuOCR, selector))
         {
-            AsstSetStaticOption(AsstStaticOptionKey.GpuOCR, selector);
+            _logger.Warning("Failed to apply inference device selector {Selector}", selector);
         }
 
         if (backend == InferenceBackend.OpenVINONpu)
         {
-            var warning = LocalizationHelper.GetString("InferenceBackendOpenVinoNpu.Warning");
+            var warning = LocalizationHelper.GetString("InferenceBackend.OpenVinoNpu.Warning");
             _logger.Warning("OpenVINO NPU is experimental: {Warning}", warning);
             Instances.TaskQueueViewModel.AddLog(warning, UiLogColor.Warning);
         }

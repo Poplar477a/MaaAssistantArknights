@@ -130,6 +130,30 @@ std::string
     return text;
 }
 
+// Byte offsets of every UTF-8 character boundary, plus the end offset. Used to
+// drop chunk overlaps without splitting a multi-byte character.
+std::vector<std::size_t> utf8_char_offsets(const std::string& text)
+{
+    std::vector<std::size_t> offsets;
+    for (std::size_t i = 0; i < text.size();) {
+        offsets.push_back(i);
+        const auto byte = static_cast<unsigned char>(text[i]);
+        std::size_t length = 1;
+        if ((byte & 0xE0) == 0xC0) {
+            length = 2;
+        }
+        else if ((byte & 0xF0) == 0xE0) {
+            length = 3;
+        }
+        else if ((byte & 0xF8) == 0xF0) {
+            length = 4;
+        }
+        i += std::min(length, text.size() - i);
+    }
+    offsets.push_back(text.size());
+    return offsets;
+}
+
 void fill_det_input(const cv::Mat& image, std::vector<float>& dst, float& out_scale)
 {
     const float scale = std::min(
@@ -724,6 +748,14 @@ bool OcrPack::warmup()
 #ifdef MAA_WITH_OPENVINO
 void OcrPack::release_openvino()
 {
+    if (m_impl->ov_device == "NPU" && (m_impl->ov_det_ready || !m_impl->ov_rec_buckets.empty())) {
+        // Destroying compiled NPU objects outside of process teardown can also
+        // crash in the plugin; abandon them instead of releasing.
+        abandon_openvino_objects();
+        m_impl->ov_device.clear();
+        return;
+    }
+
     m_ov_active = false;
     m_impl->ov_det_ready = false;
     m_impl->ov_det_req = ov::InferRequest();
@@ -732,6 +764,7 @@ void OcrPack::release_openvino()
     m_impl->ov_failed_buckets.clear();
     m_impl->ov_det_in.clear();
     m_impl->ov_rec_in.clear();
+    m_impl->ov_device.clear();
 }
 
 void OcrPack::abandon_openvino_objects()
@@ -804,15 +837,21 @@ bool OcrPack::create_openvino_pipeline()
         const ov::Shape rec_shape { 1, 3, ocr_ov::RecHeight, ocr_ov::RecWidthShort };
         auto rec_model = ocr_ov::read_static_model(ocr_ov::shared_core(), m_impl->rec_model_path, rec_shape);
         auto compiled = ocr_ov::shared_core().compile_model(rec_model, device, m_impl->ov_props);
-        auto request = compiled.create_infer_request();
-        LogInfo << "OpenVINO rec execution devices" << ocr_ov::device_summary(compiled, device);
+        // Store the model in the map before creating the request: if request
+        // creation throws, abandon_openvino_objects() can still leak it.
         m_impl->ov_rec_buckets.erase(ocr_ov::RecWidthShort);
-        m_impl->ov_rec_buckets.emplace(
-            ocr_ov::RecWidthShort,
-            Impl::RecBucket { std::move(compiled), std::move(request) });
+        auto& bucket = m_impl->ov_rec_buckets[ocr_ov::RecWidthShort];
+        bucket.model = std::move(compiled);
+        LogInfo << "OpenVINO rec execution devices" << ocr_ov::device_summary(bucket.model, device);
+        bucket.request = bucket.model.create_infer_request();
     };
 
-    const auto warmup = [this] {
+    const auto warmup = [this](const std::string& device) {
+        std::unique_lock<std::mutex> npu_lock;
+        if (device == "NPU") {
+            npu_lock = std::unique_lock<std::mutex>(openvino_npu_mutex());
+        }
+
         float scale = 1.0F;
         const cv::Mat det_dummy = cv::Mat::zeros(ocr_ov::DetHeight, ocr_ov::DetWidth, CV_8UC3);
         ocr_ov::fill_det_input(det_dummy, m_impl->ov_det_in, scale);
@@ -838,7 +877,7 @@ bool OcrPack::create_openvino_pipeline()
 
     try {
         compile_all(requested_device);
-        warmup();
+        warmup(requested_device);
         m_impl->ov_device = requested_device;
         m_ov_active = true;
         LogInfo << __FUNCTION__ << "OpenVINO OCR ready on" << requested_device << "det bucket" << ocr_ov::DetWidth
@@ -854,7 +893,7 @@ bool OcrPack::create_openvino_pipeline()
     abandon_openvino_objects();
     try {
         compile_all("CPU");
-        warmup();
+        warmup("CPU");
         m_impl->ov_device = "CPU";
         m_ov_active = true;
         LogInfo << __FUNCTION__ << "OpenVINO OCR ready on CPU after fallback";
@@ -879,7 +918,7 @@ OcrPack::ResultsVec
     ResultsVec raw_results;
 
     const auto ensure_bucket = [this](int width) -> bool {
-        if (m_impl->ov_rec_buckets.contains(width)) {
+        if (m_impl->ov_rec_buckets.contains(width) && !m_impl->ov_failed_buckets.contains(width)) {
             return true;
         }
         if (m_impl->ov_failed_buckets.contains(width)) {
@@ -889,10 +928,12 @@ OcrPack::ResultsVec
             const ov::Shape shape { 1, 3, ocr_ov::RecHeight, static_cast<std::size_t>(width) };
             auto model = ocr_ov::read_static_model(ocr_ov::shared_core(), m_impl->rec_model_path, shape);
             auto compiled = ocr_ov::shared_core().compile_model(model, m_impl->ov_device, m_impl->ov_props);
-            auto request = compiled.create_infer_request();
+            m_impl->ov_rec_buckets.erase(width);
+            auto& bucket = m_impl->ov_rec_buckets[width];
+            bucket.model = std::move(compiled);
             LogInfo << "OpenVINO extra rec bucket" << width << "execution devices"
-                    << ocr_ov::device_summary(compiled, m_impl->ov_device);
-            m_impl->ov_rec_buckets.emplace(width, Impl::RecBucket { std::move(compiled), std::move(request) });
+                    << ocr_ov::device_summary(bucket.model, m_impl->ov_device);
+            bucket.request = bucket.model.create_infer_request();
             return true;
         }
         catch (const std::exception& e) {
@@ -950,8 +991,9 @@ OcrPack::ResultsVec
             cv::INTER_LINEAR);
 
         if (!ensure_bucket(ocr_ov::RecChunkWidth)) {
-            out_score = 0.0F;
-            return {};
+            // No usable recognition bucket: let recognize() fall back to
+            // FastDeploy CPU instead of silently dropping this line.
+            throw std::runtime_error("no OpenVINO recognition bucket available");
         }
 
         std::string text;
@@ -970,16 +1012,15 @@ OcrPack::ResultsVec
             std::string part = run_rec(ocr_ov::RecChunkWidth, chunk_score);
             if (!part.empty()) {
                 if (!text.empty()) {
-                    const int max_overlap =
-                        std::min({ static_cast<int>(text.size()), static_cast<int>(part.size()), 8 });
+                    const auto text_offsets = ocr_ov::utf8_char_offsets(text);
+                    const auto part_offsets = ocr_ov::utf8_char_offsets(part);
+                    const int max_overlap = std::min(
+                        { static_cast<int>(text_offsets.size()) - 1, static_cast<int>(part_offsets.size()) - 1, 8 });
                     for (int k = max_overlap; k > 0; --k) {
-                        if (text.compare(
-                                text.size() - static_cast<std::size_t>(k),
-                                static_cast<std::size_t>(k),
-                                part,
-                                0,
-                                static_cast<std::size_t>(k)) == 0) {
-                            part.erase(0, static_cast<std::size_t>(k));
+                        const auto text_start = text_offsets[text_offsets.size() - 1 - static_cast<std::size_t>(k)];
+                        const auto part_end = part_offsets[static_cast<std::size_t>(k)];
+                        if (text.compare(text_start, text.size() - text_start, part, 0, part_end) == 0) {
+                            part.erase(0, part_end);
                             break;
                         }
                     }

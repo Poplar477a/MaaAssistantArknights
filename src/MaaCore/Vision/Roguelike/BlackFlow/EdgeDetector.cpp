@@ -7,6 +7,7 @@
 #include <mutex>
 #include <numeric>
 #include <stdexcept>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 #include <opencv2/imgproc.hpp>
@@ -241,6 +242,19 @@ struct EdgeDetector::Impl
         }
         if (crops.empty()) {
             return {};
+        }
+        if (crops.size() > 1 && OnnxSessions::npu_inference_enabled()) {
+            // The NPU session is compiled with a static batch of one.
+            std::vector<float> results;
+            results.reserve(crops.size());
+            for (const auto& crop : crops) {
+                auto single = run(std::vector<cv::Mat> { crop });
+                if (single.size() != 1) {
+                    throw std::runtime_error("CorridorNet returned an invalid batch result");
+                }
+                results.push_back(single.front());
+            }
+            return results;
         }
         const std::size_t plane = static_cast<std::size_t>(input_height * input_width);
         std::vector<float> input(crops.size() * static_cast<std::size_t>(input_channels) * plane);

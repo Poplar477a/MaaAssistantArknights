@@ -99,7 +99,7 @@
             Margin="8,8,8,0"
             HorizontalAlignment="Center"
             Foreground="{DynamicResource WarningBrush}"
-            Text="{DynamicResource InferenceBackendOpenVinoNpu.Warning}"
+            Text="{DynamicResource InferenceBackend.OpenVinoNpu.Warning}"
             TextWrapping="Wrap"
             Visibility="{c:Binding IsOpenVinoNpuSelected}" />
         <StackPanel

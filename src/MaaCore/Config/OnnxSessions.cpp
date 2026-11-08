@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "Utils/Logger.hpp"
+#include "Utils/Platform.hpp"
 #include "Utils/WorkingDir.hpp"
 #include "WebGpuDevice.h"
 
@@ -79,6 +80,7 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
         const auto output_name = session.GetOutputNameAllocated(0, allocator);
         const char* input_names[] = { input_name.get() };
         const char* output_names[] = { output_name.get() };
+        auto npu_lock = OnnxSessions::acquire_npu_inference_lock();
         session.Run(Ort::RunOptions { nullptr }, input_names, &input, 1, output_names, 1);
     };
 
@@ -114,7 +116,9 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
     m_gpu_selector = std::nullopt;
     gpu_enabled = false;
     gpu_options_initialized = false;
-    m_npu_inference_enabled.store(false, std::memory_order_relaxed);
+    // Sessions still held by callers were created on the NPU; keep the lock
+    // enabled until they are all released and recreated.
+    m_npu_inference_enabled.store(!m_sessions.empty(), std::memory_order_relaxed);
 
     try {
         const auto created = m_sessions.emplace(name, Ort::Session(m_env, m_model_paths.at(name).c_str(), m_options));
@@ -158,7 +162,7 @@ Ort::Session& asst::OnnxSessions::get_or_create(const std::string& name)
         m_gpu_selector = std::nullopt;
         gpu_enabled = false;
         gpu_options_initialized = false;
-        m_npu_inference_enabled.store(false, std::memory_order_relaxed);
+        m_npu_inference_enabled.store(!m_sessions.empty(), std::memory_order_relaxed);
         m_sessions.emplace(name, Ort::Session(m_env, m_model_paths.at(name).c_str(), m_options));
     }
 
@@ -193,6 +197,9 @@ void asst::OnnxSessions::release(const std::string& name)
             // 持有期间模型路径变化过，最后一个引用释放后销毁旧会话，下次 acquire 按新路径重建
             m_sessions.erase(name);
             Log.info(__FUNCTION__, "stale session destroyed after last release", name);
+        }
+        if (!gpu_enabled && m_sessions.empty()) {
+            m_npu_inference_enabled.store(false, std::memory_order_relaxed);
         }
         Log.info(__FUNCTION__, "released", name);
     }
@@ -461,28 +468,39 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
         options.AppendExecutionProvider_OpenVINO_V2(ep_options);
 
         // The EP may register successfully while the device plugin still fails
-        // on the first real session. Compile and run one small model on NPU so
-        // the GUI does not offer a device that will fall back to CPU.
+        // on the first real session. Compile and run one small model so the GUI
+        // does not offer a device that will fall back to CPU.
+        using namespace asst::utils::path_literals;
+        const auto model_path = UserDir.get() / "resource"_p / "onnx"_p / "deploy_direction_cls.onnx"_p;
+        if (!std::filesystem::exists(model_path)) {
+            LogError << __FUNCTION__ << "| probe model is missing:" << model_path;
+            return false;
+        }
+
+        const auto run_probe = [&](Ort::Session& session) {
+            std::array<float, 1 * 3 * 96 * 96> zeros {};
+            auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
+            const std::array<int64_t, 4> shape { 1, 3, 96, 96 };
+            auto input =
+                Ort::Value::CreateTensor<float>(memory_info, zeros.data(), zeros.size(), shape.data(), shape.size());
+            Ort::AllocatorWithDefaultOptions allocator;
+            const auto input_name = session.GetInputNameAllocated(0, allocator);
+            const auto output_name = session.GetOutputNameAllocated(0, allocator);
+            const char* input_names[] = { input_name.get() };
+            const char* output_names[] = { output_name.get() };
+            session.Run(Ort::RunOptions { nullptr }, input_names, &input, 1, output_names, 1);
+        };
+
         if (npu) {
-            const auto model_path = UserDir.get() / "resource" / "onnx" / "deploy_direction_cls.onnx";
-            if (std::filesystem::exists(model_path)) {
-                Ort::Session session(probe_env, model_path.c_str(), options);
-                std::array<float, 1 * 3 * 96 * 96> zeros {};
-                auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
-                const std::array<int64_t, 4> shape { 1, 3, 96, 96 };
-                auto input = Ort::Value::CreateTensor<float>(
-                    memory_info,
-                    zeros.data(),
-                    zeros.size(),
-                    shape.data(),
-                    shape.size());
-                Ort::AllocatorWithDefaultOptions allocator;
-                const auto input_name = session.GetInputNameAllocated(0, allocator);
-                const auto output_name = session.GetOutputNameAllocated(0, allocator);
-                const char* input_names[] = { input_name.get() };
-                const char* output_names[] = { output_name.get() };
-                session.Run(Ort::RunOptions { nullptr }, input_names, &input, 1, output_names, 1);
-            }
+            // Keep the probe session alive: destroying an NPU ORT session can
+            // crash inside the plugin, same as the normal session teardown.
+            auto* session = new Ort::Session(probe_env, model_path.c_str(), options);
+            const std::lock_guard npu_lock(openvino_npu_mutex());
+            run_probe(*session);
+        }
+        else {
+            Ort::Session session(probe_env, model_path.c_str(), options);
+            run_probe(session);
         }
 
         LogInfo << __FUNCTION__ << "| OpenVINO" << (npu ? "NPU" : "CPU") << "available";
