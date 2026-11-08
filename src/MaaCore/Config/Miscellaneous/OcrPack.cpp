@@ -183,6 +183,8 @@ void fill_det_input(const cv::Mat& image, std::vector<float>& dst, float& out_sc
 
     cv::Mat float_image;
     canvas.convertTo(float_image, CV_32FC3, 1.0 / 255.0);
+    // PaddleOCR/FastDeploy/NCNN feed the OpenCV BGR image as-is and apply the
+    // ImageNet constants in BGR order; do not swap to RGB here.
     cv::Mat normalised = (float_image - cv::Scalar(0.485, 0.456, 0.406)) / cv::Scalar(0.229, 0.224, 0.225);
 
     const std::size_t plane = static_cast<std::size_t>(DetHeight) * static_cast<std::size_t>(DetWidth);
@@ -957,6 +959,10 @@ OcrPack::ResultsVec
             return false;
         }
         try {
+            std::unique_lock<std::mutex> npu_lock;
+            if (m_impl->ov_device.starts_with("NPU")) {
+                npu_lock = std::unique_lock<std::mutex>(openvino_npu_mutex());
+            }
             const ov::Shape shape { 1, 3, ocr_ov::RecHeight, static_cast<std::size_t>(width) };
             auto model = ocr_ov::read_static_model(ocr_ov::shared_core(), m_impl->rec_model_path, shape);
             auto compiled = ocr_ov::shared_core().compile_model(model, m_impl->ov_device, m_impl->ov_props);

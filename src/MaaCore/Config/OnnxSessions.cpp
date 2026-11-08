@@ -494,7 +494,14 @@ static void run_probe_session(Ort::Session& session)
 
 bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
 {
-    const auto all_providers = Ort::GetAvailableProviders();
+    std::vector<std::string> all_providers;
+    try {
+        all_providers = Ort::GetAvailableProviders();
+    }
+    catch (const std::exception& e) {
+        LogWarn << __FUNCTION__ << "| failed to enumerate execution providers:" << e.what();
+        return false;
+    }
     if (std::ranges::find(all_providers, "OpenVINOExecutionProvider") == all_providers.end()) {
         LogInfo << __FUNCTION__ << "| OpenVINO execution provider unavailable";
         return false;
