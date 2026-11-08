@@ -712,7 +712,7 @@ public class AsstProxy
             "OpenVINO availability: CPU={Cpu}, NPU={Npu}",
             OpenVinoCpuAvailable,
             OpenVinoNpuAvailable);
-        Application.Current?.Dispatcher.Invoke(() =>
+        Execute.OnUIThread(() =>
         {
             var backend = SettingsViewModel.PerformanceSettings.ActiveBackend;
             if (backend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu)
@@ -726,7 +726,11 @@ public class AsstProxy
                         backend,
                         warning);
                     Instances.TaskQueueViewModel.AddLog(warning, UiLogColor.Warning);
-                    ConfigFactory.Root.Gui.Performance.Backend = InferenceBackend.Auto;
+
+                    // Use the settings VM so the UI and config update together;
+                    // the setter also asks for the restart needed to reconfigure
+                    // MaaCore after resources are already loaded.
+                    SettingsViewModel.PerformanceSettings.ActiveBackend = InferenceBackend.Auto;
                 }
             }
 

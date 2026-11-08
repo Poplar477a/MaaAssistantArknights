@@ -117,25 +117,26 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
 
     Log.error(__FUNCTION__, "accelerator warmup failed for", name, "; falling back to CPU mode");
     const bool leak_npu_sessions = m_npu_inference_enabled.load(std::memory_order_relaxed);
-    if (auto iter = m_sessions.find(name); iter != m_sessions.end()) {
-        if (leak_npu_sessions) {
-            abandon_ort_session(iter->first, std::move(iter->second));
+    if (leak_npu_sessions) {
+        // Callers using get() hold raw session references without registering
+        // in m_session_users. Leak all cached sessions so those references stay
+        // valid while the cache is rebuilt on CPU.
+        for (auto& [session_name, session] : m_sessions) {
+            abandon_ort_session(session_name, std::move(session));
         }
-        m_sessions.erase(iter);
+        m_sessions.clear();
+        m_pending_reload.clear();
     }
-    for (auto iter = m_sessions.begin(); iter != m_sessions.end();) {
-        if (m_session_users.contains(iter->first)) {
-            // The holder still references the old accelerator session; leak it
-            // and recreate on CPU once the last reference is released.
-            m_pending_reload.insert(iter->first);
-            ++iter;
-        }
-        else if (leak_npu_sessions) {
-            abandon_ort_session(iter->first, std::move(iter->second));
-            iter = m_sessions.erase(iter);
-        }
-        else {
-            iter = m_sessions.erase(iter);
+    else {
+        m_sessions.erase(name);
+        for (auto iter = m_sessions.begin(); iter != m_sessions.end();) {
+            if (m_session_users.contains(iter->first)) {
+                m_pending_reload.insert(iter->first);
+                ++iter;
+            }
+            else {
+                iter = m_sessions.erase(iter);
+            }
         }
     }
     reset_session_options();
