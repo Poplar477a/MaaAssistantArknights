@@ -34,7 +34,7 @@ MAA_SUPPRESS_CV_WARNINGS_END
 #pragma warning(push)
 // ov::Tensor::data<T>() keeps the mutable-pointer overload deprecated until 2026.0
 // while MaaCore builds with warnings as errors.
-#pragma warning(disable : 4996)
+#pragma warning(disable: 4996)
 #endif
 #include <openvino/openvino.hpp>
 
@@ -278,6 +278,7 @@ struct OcrPack::Impl
         ov::CompiledModel model;
         ov::InferRequest request;
     };
+
     std::map<int, RecBucket> ov_rec_buckets;
     bool ov_long_bucket_failed = false;
 
@@ -791,17 +792,16 @@ bool OcrPack::create_openvino_pipeline()
         request.infer();
     };
 
-    const std::string requested_device =
-        m_gpu_selector->openvino_device() == OpenVINODevice::NPU ? "NPU" : "CPU";
+    const std::string requested_device = m_gpu_selector->openvino_device() == OpenVINODevice::NPU ? "NPU" : "CPU";
 
     try {
         compile_all(requested_device);
         warmup();
         m_impl->ov_device = requested_device;
         m_ov_active = true;
-        LogInfo << __FUNCTION__ << "OpenVINO OCR ready on" << requested_device << "det bucket"
-                << ocr_ov::DetWidth << "x" << ocr_ov::DetHeight << "rec bucket" << ocr_ov::RecWidthShort << "x"
-                << ocr_ov::RecHeight << "keys" << m_impl->ov_keys.size();
+        LogInfo << __FUNCTION__ << "OpenVINO OCR ready on" << requested_device << "det bucket" << ocr_ov::DetWidth
+                << "x" << ocr_ov::DetHeight << "rec bucket" << ocr_ov::RecWidthShort << "x" << ocr_ov::RecHeight
+                << "keys" << m_impl->ov_keys.size();
         return true;
     }
     catch (const std::exception& e) {
@@ -826,10 +826,8 @@ bool OcrPack::create_openvino_pipeline()
 #endif
 }
 
-OcrPack::ResultsVec OcrPack::recognize_openvino(
-    const cv::Mat& image,
-    bool without_det,
-    const std::optional<Rect>& base_roi)
+OcrPack::ResultsVec
+    OcrPack::recognize_openvino(const cv::Mat& image, bool without_det, const std::optional<Rect>& base_roi)
 {
     if (image.empty()) {
         return {};

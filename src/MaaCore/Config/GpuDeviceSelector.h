@@ -52,10 +52,8 @@ public:
             if (delimiter != std::string_view::npos) {
                 const auto id_text = value.substr(delimiter + 1);
                 int device_id = 0;
-                const auto [ptr, ec] =
-                    std::from_chars(id_text.data(), id_text.data() + id_text.size(), device_id);
-                if (id_text.empty() || ec != std::errc {} || ptr != id_text.data() + id_text.size() ||
-                    device_id < 0) {
+                const auto [ptr, ec] = std::from_chars(id_text.data(), id_text.data() + id_text.size(), device_id);
+                if (id_text.empty() || ec != std::errc {} || ptr != id_text.data() + id_text.size() || device_id < 0) {
                     return std::nullopt;
                 }
                 result.m_device_id = device_id;

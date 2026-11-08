@@ -66,9 +66,15 @@ endif()
 if(NOT ANDROID)
     find_package(OpenVINO CONFIG QUIET COMPONENTS Runtime ONNX)
     if(OpenVINO_FOUND)
-        target_link_libraries(MaaCore openvino::runtime openvino::frontend::onnx)
-        target_compile_definitions(MaaCore PRIVATE MAA_WITH_OPENVINO=1)
-        message(STATUS "MaaCore: OpenVINO backend enabled (${OpenVINO_VERSION})")
+        # OpenVINO only ships a release CRT. Linking it into a /MDd Debug build
+        # triggers MSVCRT conflicts and makes passing ov:: objects unsafe, so the
+        # native OCR path is enabled for non-Debug configurations only. ONNX
+        # sessions still reach the OpenVINO EP through onnxruntime in Debug.
+        target_link_libraries(MaaCore
+            $<$<NOT:$<CONFIG:Debug>>:openvino::runtime>
+            $<$<NOT:$<CONFIG:Debug>>:openvino::frontend::onnx>)
+        target_compile_definitions(MaaCore PRIVATE $<$<NOT:$<CONFIG:Debug>>:MAA_WITH_OPENVINO=1>)
+        message(STATUS "MaaCore: OpenVINO backend enabled (${OpenVINO_VERSION}); native OCR disabled in Debug")
 
         if(WIN32)
             get_target_property(_ov_runtime_dll openvino::runtime IMPORTED_LOCATION_RELEASE)
