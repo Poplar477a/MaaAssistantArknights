@@ -92,6 +92,17 @@ public class PerformanceUserControlModel : PropertyChangedBase
         }
     }
 
+    public void SetBackendWithoutRestart(InferenceBackend backend)
+    {
+        if (ConfigFactory.Root.Gui.Performance.Backend == backend)
+        {
+            return;
+        }
+
+        ConfigFactory.Root.Gui.Performance.Backend = backend;
+        NotifyOfPropertyChange(nameof(ActiveBackend));
+    }
+
     [PropertyDependsOn(nameof(ActiveBackend))]
     public bool IsGpuSelectionVisible => ActiveBackend is not (InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu);
 

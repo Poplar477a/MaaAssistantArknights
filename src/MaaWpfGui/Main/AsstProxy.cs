@@ -699,8 +699,14 @@ public class AsstProxy
 
         try
         {
-            OpenVinoCpuAvailable = AsstSetStaticOption(AsstStaticOptionKey.OpenVINOProbe, "cpu");
-            OpenVinoNpuAvailable = AsstSetStaticOption(AsstStaticOptionKey.OpenVINOProbe, "npu");
+            // Probe both devices in parallel with a shared deadline. The probe
+            // must finish before the backend selector is applied, so a hung
+            // device falls back to Auto before any NPU inference starts.
+            var cpuTask = Task.Run(() => AsstSetStaticOption(AsstStaticOptionKey.OpenVINOProbe, "cpu"));
+            var npuTask = Task.Run(() => AsstSetStaticOption(AsstStaticOptionKey.OpenVINOProbe, "npu"));
+            Task.WaitAll([cpuTask, npuTask], TimeSpan.FromSeconds(6));
+            OpenVinoCpuAvailable = cpuTask.IsCompletedSuccessfully && cpuTask.Result;
+            OpenVinoNpuAvailable = npuTask.IsCompletedSuccessfully && npuTask.Result;
         }
         catch (Exception ex)
         {
@@ -712,30 +718,7 @@ public class AsstProxy
             "OpenVINO availability: CPU={Cpu}, NPU={Npu}",
             OpenVinoCpuAvailable,
             OpenVinoNpuAvailable);
-        Execute.OnUIThread(() =>
-        {
-            var backend = SettingsViewModel.PerformanceSettings.ActiveBackend;
-            if (backend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu)
-            {
-                var available = backend == InferenceBackend.OpenVINOCpu ? OpenVinoCpuAvailable : OpenVinoNpuAvailable;
-                if (!available)
-                {
-                    var warning = LocalizationHelper.GetString("InferenceBackend.Unavailable.Warning");
-                    _logger.Warning(
-                        "Saved OpenVINO backend {Backend} is unavailable; falling back to Auto. {Warning}",
-                        backend,
-                        warning);
-                    Instances.TaskQueueViewModel.AddLog(warning, UiLogColor.Warning);
-
-                    // Use the settings VM so the UI and config update together;
-                    // the setter also asks for the restart needed to reconfigure
-                    // MaaCore after resources are already loaded.
-                    SettingsViewModel.PerformanceSettings.ActiveBackend = InferenceBackend.Auto;
-                }
-            }
-
-            OpenVinoAvailabilityChanged?.Invoke();
-        });
+        Execute.OnUIThread(() => OpenVinoAvailabilityChanged?.Invoke());
     }
 
     /// <summary>
@@ -751,7 +734,28 @@ public class AsstProxy
             return;
         }
 
+        // Probe before applying the selector: a timed-out NPU probe then falls
+        // back to Auto instead of leaving a background request holding the NPU
+        // lock that later inference would wait on.
+        ProbeOpenVino();
+
         var backend = SettingsViewModel.PerformanceSettings.ActiveBackend;
+        if (backend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu)
+        {
+            var available = backend == InferenceBackend.OpenVINOCpu ? OpenVinoCpuAvailable : OpenVinoNpuAvailable;
+            if (!available)
+            {
+                var warning = LocalizationHelper.GetString("InferenceBackend.Unavailable.Warning");
+                _logger.Warning(
+                    "Saved OpenVINO backend {Backend} is unavailable; falling back to Auto. {Warning}",
+                    backend,
+                    warning);
+                Instances.TaskQueueViewModel.AddLog(warning, UiLogColor.Warning);
+                SettingsViewModel.PerformanceSettings.SetBackendWithoutRestart(InferenceBackend.Auto);
+                backend = InferenceBackend.Auto;
+            }
+        }
+
         string? selector = backend switch
         {
             InferenceBackend.OpenVINOCpu => "openvino:cpu",
@@ -793,11 +797,6 @@ public class AsstProxy
         {
             _handle = handle;
         }
-
-        // Capability probing compiles a small model and may block on a faulty
-        // NPU driver; keep it off the startup path. Resources are loaded now,
-        // so the probe model is available.
-        _ = Task.Run(ProbeOpenVino);
 
         if (loaded == false || handle == AsstHandle.Zero)
         {
