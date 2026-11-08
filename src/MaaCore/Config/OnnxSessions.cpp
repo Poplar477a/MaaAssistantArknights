@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "Utils/Logger.hpp"
+#include "Utils/WorkingDir.hpp"
 #include "WebGpuDevice.h"
 
 #if __has_include(<onnxruntime/dml_provider_factory.h>)
@@ -98,10 +99,22 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
 
     Log.error(__FUNCTION__, "accelerator warmup failed for", name, "; falling back to CPU mode");
     m_sessions.erase(name);
+    for (auto iter = m_sessions.begin(); iter != m_sessions.end();) {
+        if (m_session_users.contains(iter->first)) {
+            // The holder still references the old accelerator session; destroy
+            // and recreate it on CPU once the last reference is released.
+            m_pending_reload.insert(iter->first);
+            ++iter;
+        }
+        else {
+            iter = m_sessions.erase(iter);
+        }
+    }
     reset_session_options();
     m_gpu_selector = std::nullopt;
     gpu_enabled = false;
     gpu_options_initialized = false;
+    m_npu_inference_enabled.store(false, std::memory_order_relaxed);
 
     try {
         const auto created = m_sessions.emplace(name, Ort::Session(m_env, m_model_paths.at(name).c_str(), m_options));
@@ -145,6 +158,7 @@ Ort::Session& asst::OnnxSessions::get_or_create(const std::string& name)
         m_gpu_selector = std::nullopt;
         gpu_enabled = false;
         gpu_options_initialized = false;
+        m_npu_inference_enabled.store(false, std::memory_order_relaxed);
         m_sessions.emplace(name, Ort::Session(m_env, m_model_paths.at(name).c_str(), m_options));
     }
 
@@ -228,6 +242,7 @@ bool asst::OnnxSessions::use_cpu_locked()
     m_gpu_selector = std::nullopt;
     gpu_enabled = false;
     gpu_options_initialized = false;
+    m_npu_inference_enabled.store(false, std::memory_order_relaxed);
     return true;
 }
 
@@ -271,6 +286,7 @@ bool asst::OnnxSessions::initialize_gpu_options()
     }
 
     const auto backend = m_gpu_selector->backend();
+    m_npu_inference_enabled.store(false, std::memory_order_relaxed);
     auto all_providers = Ort::GetAvailableProviders();
     bool support_cuda = false;
 #ifdef WITH_DML
@@ -352,6 +368,7 @@ bool asst::OnnxSessions::initialize_gpu_options()
             try {
                 m_options.AppendExecutionProvider_OpenVINO_V2(ep_options);
                 provider_configured = true;
+                m_npu_inference_enabled.store(npu, std::memory_order_relaxed);
                 LogInfo << "OpenVINO execution provider enabled on" << ep_options.at("device_type");
             }
             catch (const Ort::Exception& ex) {
@@ -424,7 +441,7 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
 {
     const auto all_providers = Ort::GetAvailableProviders();
     if (std::ranges::find(all_providers, "OpenVINOExecutionProvider") == all_providers.end()) {
-        Log.info(__FUNCTION__, "| OpenVINO execution provider unavailable");
+        LogInfo << __FUNCTION__ << "| OpenVINO execution provider unavailable";
         return false;
     }
 
@@ -442,13 +459,52 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
             ep_options.emplace("disable_dynamic_shapes", "true");
         }
         options.AppendExecutionProvider_OpenVINO_V2(ep_options);
-        Log.info(__FUNCTION__, "| OpenVINO", npu ? "NPU" : "CPU", "available");
+
+        // The EP may register successfully while the device plugin still fails
+        // on the first real session. Compile and run one small model on NPU so
+        // the GUI does not offer a device that will fall back to CPU.
+        if (npu) {
+            const auto model_path = UserDir.get() / "resource" / "onnx" / "deploy_direction_cls.onnx";
+            if (std::filesystem::exists(model_path)) {
+                Ort::Session session(probe_env, model_path.c_str(), options);
+                std::array<float, 1 * 3 * 96 * 96> zeros {};
+                auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
+                const std::array<int64_t, 4> shape { 1, 3, 96, 96 };
+                auto input = Ort::Value::CreateTensor<float>(
+                    memory_info,
+                    zeros.data(),
+                    zeros.size(),
+                    shape.data(),
+                    shape.size());
+                Ort::AllocatorWithDefaultOptions allocator;
+                const auto input_name = session.GetInputNameAllocated(0, allocator);
+                const auto output_name = session.GetOutputNameAllocated(0, allocator);
+                const char* input_names[] = { input_name.get() };
+                const char* output_names[] = { output_name.get() };
+                session.Run(Ort::RunOptions { nullptr }, input_names, &input, 1, output_names, 1);
+            }
+        }
+
+        LogInfo << __FUNCTION__ << "| OpenVINO" << (npu ? "NPU" : "CPU") << "available";
         return true;
     }
     catch (const std::exception& e) {
-        Log.warn(__FUNCTION__, "| OpenVINO", npu ? "NPU" : "CPU", "unavailable:", e.what());
+        LogWarn << __FUNCTION__ << "| OpenVINO" << (npu ? "NPU" : "CPU") << "unavailable:" << e.what();
         return false;
     }
+}
+
+bool asst::OnnxSessions::npu_inference_enabled() noexcept
+{
+    return get_instance().m_npu_inference_enabled.load(std::memory_order_relaxed);
+}
+
+std::unique_lock<std::mutex> asst::OnnxSessions::acquire_npu_inference_lock()
+{
+    if (!npu_inference_enabled()) {
+        return {};
+    }
+    return std::unique_lock<std::mutex>(openvino_npu_mutex());
 }
 
 asst::OnnxSessions::~OnnxSessions()

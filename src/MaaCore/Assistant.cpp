@@ -119,7 +119,7 @@ bool ::AsstExtAPI::set_static_option(StaticOptionKey key, const std::string& val
         if (value == "cpu") {
             return OnnxSessions::probe_openvino(OpenVINODevice::CPU);
         }
-        Log.error(__FUNCTION__, "| invalid OpenVINO probe device:", value);
+        LogError << __FUNCTION__ << "| invalid OpenVINO probe device:" << value;
         return false;
     } break;
     default:

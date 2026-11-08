@@ -19,6 +19,7 @@ using MaaWpfGui.Configuration.Factory;
 using MaaWpfGui.Constants.Enums;
 using MaaWpfGui.Helper;
 using MaaWpfGui.Main;
+using MaaWpfGui.Utilities;
 using MaaWpfGui.Utilities.ValueType;
 using MaaWpfGui.ViewModels.UI;
 using Stylet;
@@ -38,6 +39,11 @@ public class PerformanceUserControlModel : PropertyChangedBase
     }
 
     public static PerformanceUserControlModel Instance { get; }
+
+    public PerformanceUserControlModel()
+    {
+        PropertyDependsOnUtility.InitializePropertyDependencies(this);
+    }
 
     private List<GpuOptionItem>? _gpuOptions;
 
@@ -82,14 +88,14 @@ public class PerformanceUserControlModel : PropertyChangedBase
 
             ConfigFactory.Root.Gui.Performance.Backend = value;
             NotifyOfPropertyChange();
-            NotifyOfPropertyChange(nameof(IsGpuSelectionVisible));
-            NotifyOfPropertyChange(nameof(IsOpenVinoNpuSelected));
             SettingsViewModel.AskRestartToApplySettings();
         }
     }
 
+    [PropertyDependsOn(nameof(ActiveBackend))]
     public bool IsGpuSelectionVisible => ActiveBackend is not (InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu);
 
+    [PropertyDependsOn(nameof(ActiveBackend))]
     public bool IsOpenVinoNpuSelected => ActiveBackend == InferenceBackend.OpenVINONpu;
 
     public bool OpenVinoCpuAvailable => !AsstProxy.OpenVinoProbed || AsstProxy.OpenVinoCpuAvailable;

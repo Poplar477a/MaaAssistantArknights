@@ -11,6 +11,12 @@
 
 #endif
 
+std::mutex& asst::openvino_npu_mutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
 std::optional<int> asst::GpuDeviceSelector::resolve_device_id() const
 {
     if (m_backend == InferenceBackend::OpenVINO || !m_adapter_luid) {

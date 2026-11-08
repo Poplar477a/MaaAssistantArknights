@@ -24,6 +24,7 @@ MAA_SUPPRESS_CV_WARNINGS_END
 #include <map>
 #include <mutex>
 #include <ranges>
+#include <set>
 #include <string>
 
 #ifdef MAA_WITH_OPENVINO
@@ -57,21 +58,15 @@ ov::Core& shared_core()
     return *core;
 }
 
-// The NPU plugin is not safe for concurrent inference requests; WordOcr and
-// CharOcr can be driven from different pipeline stages, so serialize them.
-std::mutex& npu_mutex()
-{
-    static std::mutex mutex;
-    return mutex;
-}
-
 constexpr int DetHeight = 544;
 constexpr int DetWidth = 960;
 constexpr int RecHeight = 48;
-// Two recognition buckets: most UI lines fit 320; longer lines are routed to
-// 960 instead of being clipped. Both are compiled lazily on first use.
+// Recognition buckets are compiled lazily. Lines wider than the largest bucket
+// are split into overlapping chunks instead of being clipped.
 constexpr int RecWidthShort = 320;
-constexpr int RecWidthLong = 960;
+constexpr int RecChunkWidth = 960;
+constexpr int RecChunkOverlap = 32;
+constexpr std::array<int, 3> RecWidthBuckets { 320, 640, 960 };
 
 constexpr float DetBinThreshold = 0.2F;
 constexpr float BoxThreshold = 0.45F;
@@ -117,6 +112,13 @@ std::string
             const int index = best - 1;
             if (index >= 0 && index < static_cast<int>(keys.size())) {
                 text += keys[index];
+                score_sum += best_value;
+                ++score_count;
+            }
+            else if (index == static_cast<int>(keys.size())) {
+                // PaddleOCR appends one extra space class after the keys table;
+                // dropping it strips spaces from recognized sentences.
+                text += ' ';
                 score_sum += best_value;
                 ++score_count;
             }
@@ -280,7 +282,7 @@ struct OcrPack::Impl
     };
 
     std::map<int, RecBucket> ov_rec_buckets;
-    bool ov_long_bucket_failed = false;
+    std::set<int> ov_failed_buckets;
 
     std::string ov_device;
     ov::AnyMap ov_props;
@@ -380,6 +382,8 @@ bool OcrPack::load(const std::filesystem::path& path)
 
 OcrPack::ResultsVec OcrPack::recognize(const cv::Mat& image, bool without_det, const std::optional<Rect>& base_roi)
 {
+    const std::lock_guard recognize_lock(m_recognize_mutex);
+
     if (!check_and_load()) {
         Log.error(__FUNCTION__, "check_and_load failed");
         return {};
@@ -387,7 +391,16 @@ OcrPack::ResultsVec OcrPack::recognize(const cv::Mat& image, bool without_det, c
 
 #ifdef MAA_WITH_OPENVINO
     if (m_ov_active) {
-        return recognize_openvino(image, without_det, base_roi);
+        try {
+            return recognize_openvino(image, without_det, base_roi);
+        }
+        catch (const std::exception& e) {
+            LogError << __FUNCTION__ << "OpenVINO OCR failed:" << e.what() << "falling back to FastDeploy CPU";
+            abandon_openvino_objects();
+            if (!create_pipeline(true)) {
+                return {};
+            }
+        }
     }
 #endif
 
@@ -555,7 +568,7 @@ bool OcrPack::create_pipeline(bool force_cpu)
         if (create_openvino_pipeline()) {
             return true;
         }
-        Log.error(__FUNCTION__, "| OpenVINO OCR init failed, falling back to FastDeploy CPU");
+        LogError << __FUNCTION__ << "| OpenVINO OCR init failed, falling back to FastDeploy CPU";
     }
 #endif
 
@@ -716,9 +729,38 @@ void OcrPack::release_openvino()
     m_impl->ov_det_req = ov::InferRequest();
     m_impl->ov_det_model = ov::CompiledModel();
     m_impl->ov_rec_buckets.clear();
-    m_impl->ov_long_bucket_failed = false;
+    m_impl->ov_failed_buckets.clear();
     m_impl->ov_det_in.clear();
     m_impl->ov_rec_in.clear();
+}
+
+void OcrPack::abandon_openvino_objects()
+{
+    // Releasing a partially initialized NPU model can crash inside
+    // openvino_intel_npu_plugin.dll. Move the objects to a deliberately leaked
+    // holder so the CPU/FastDeploy fallback can proceed safely.
+    struct LeakedObjects
+    {
+        ov::CompiledModel det_model;
+        ov::InferRequest det_req;
+        std::vector<std::pair<ov::CompiledModel, ov::InferRequest>> rec;
+    };
+
+    auto* leaked = new LeakedObjects();
+    leaked->det_model = std::move(m_impl->ov_det_model);
+    leaked->det_req = std::move(m_impl->ov_det_req);
+    for (auto& [width, bucket] : m_impl->ov_rec_buckets) {
+        leaked->rec.emplace_back(std::move(bucket.model), std::move(bucket.request));
+    }
+
+    m_impl->ov_rec_buckets.clear();
+    m_impl->ov_failed_buckets.clear();
+    m_impl->ov_det_ready = false;
+    m_impl->ov_det_model = ov::CompiledModel();
+    m_impl->ov_det_req = ov::InferRequest();
+    m_impl->ov_det_in.clear();
+    m_impl->ov_rec_in.clear();
+    m_ov_active = false;
 }
 
 bool OcrPack::create_openvino_pipeline()
@@ -736,14 +778,14 @@ bool OcrPack::create_openvino_pipeline()
         return false;
     }
     if (m_impl->det_model_path.empty() || m_impl->rec_model_path.empty() || m_impl->rec_label_path.empty()) {
-        Log.error(__FUNCTION__, "| OCR model paths are incomplete");
+        LogError << __FUNCTION__ << "| OCR model paths are incomplete";
         return false;
     }
 
     if (m_impl->ov_keys.empty()) {
         m_impl->ov_keys = ocr_ov::load_keys(m_impl->rec_label_path);
         if (m_impl->ov_keys.empty()) {
-            Log.error(__FUNCTION__, "| failed to load keys from", m_impl->rec_label_path);
+            LogError << __FUNCTION__ << "| failed to load keys from" << m_impl->rec_label_path;
             return false;
         }
     }
@@ -809,7 +851,7 @@ bool OcrPack::create_openvino_pipeline()
                 << "falling back to OpenVINO CPU";
     }
 
-    release_openvino();
+    abandon_openvino_objects();
     try {
         compile_all("CPU");
         warmup();
@@ -820,7 +862,7 @@ bool OcrPack::create_openvino_pipeline()
     }
     catch (const std::exception& e) {
         LogError << __FUNCTION__ << "OpenVINO CPU fallback failed:" << e.what();
-        release_openvino();
+        abandon_openvino_objects();
         return false;
     }
 #endif
@@ -840,7 +882,7 @@ OcrPack::ResultsVec
         if (m_impl->ov_rec_buckets.contains(width)) {
             return true;
         }
-        if (width == ocr_ov::RecWidthLong && m_impl->ov_long_bucket_failed) {
+        if (m_impl->ov_failed_buckets.contains(width)) {
             return false;
         }
         try {
@@ -855,24 +897,9 @@ OcrPack::ResultsVec
         }
         catch (const std::exception& e) {
             LogWarn << __FUNCTION__ << "failed to compile rec bucket" << width << ":" << e.what();
-            if (width == ocr_ov::RecWidthLong) {
-                m_impl->ov_long_bucket_failed = true;
-            }
+            m_impl->ov_failed_buckets.insert(width);
             return false;
         }
-    };
-
-    const auto pick_bucket = [&](const cv::Mat& crop) {
-        const int scaled_width = ocr_ov::rec_scaled_width(crop);
-        if (scaled_width <= ocr_ov::RecWidthShort) {
-            return ocr_ov::RecWidthShort;
-        }
-        if (ensure_bucket(ocr_ov::RecWidthLong)) {
-            return ocr_ov::RecWidthLong;
-        }
-        LogTrace << __FUNCTION__ << "line width" << scaled_width << "exceeds" << ocr_ov::RecWidthShort
-                 << "and the long bucket is unavailable; right side clipped";
-        return ocr_ov::RecWidthShort;
     };
 
     const auto run_rec = [this](int bucket, float& out_score) -> std::string {
@@ -886,7 +913,10 @@ OcrPack::ResultsVec
             ov::Shape { 1, 3, ocr_ov::RecHeight, static_cast<std::size_t>(bucket) },
             m_impl->ov_rec_in.data());
         {
-            const std::lock_guard lock(ocr_ov::npu_mutex());
+            std::unique_lock<std::mutex> npu_lock;
+            if (m_impl->ov_device == "NPU") {
+                npu_lock = std::unique_lock<std::mutex>(openvino_npu_mutex());
+            }
             bucket_iter->second.request.set_input_tensor(input);
             bucket_iter->second.request.infer();
         }
@@ -898,12 +928,82 @@ OcrPack::ResultsVec
         return ocr_ov::ctc_decode(output.data<const float>(), steps, classes, m_impl->ov_keys, out_score);
     };
 
+    const auto run_line = [&](const cv::Mat& crop, float& out_score) -> std::string {
+        const int scaled_width = ocr_ov::rec_scaled_width(crop);
+        for (int bucket : ocr_ov::RecWidthBuckets) {
+            if (scaled_width <= bucket && ensure_bucket(bucket)) {
+                ocr_ov::fill_rec_input(crop, m_impl->ov_rec_in, bucket);
+                return run_rec(bucket, out_score);
+            }
+        }
+
+        // Wider than every bucket: split into overlapping chunks instead of
+        // dropping the right-hand side.
+        const float scale = static_cast<float>(ocr_ov::RecHeight) / static_cast<float>(crop.rows);
+        cv::Mat resized;
+        cv::resize(
+            crop,
+            resized,
+            cv::Size(std::max(1, static_cast<int>(static_cast<float>(crop.cols) * scale)), ocr_ov::RecHeight),
+            0,
+            0,
+            cv::INTER_LINEAR);
+
+        if (!ensure_bucket(ocr_ov::RecChunkWidth)) {
+            out_score = 0.0F;
+            return {};
+        }
+
+        std::string text;
+        double score_sum = 0.0;
+        int score_count = 0;
+        const int step = ocr_ov::RecChunkWidth - ocr_ov::RecChunkOverlap;
+        for (int x = 0; x < resized.cols; x += step) {
+            const int width = std::min(ocr_ov::RecChunkWidth, resized.cols - x);
+            if (width < 4) {
+                break;
+            }
+
+            const cv::Mat chunk = resized(cv::Rect(x, 0, width, ocr_ov::RecHeight));
+            ocr_ov::fill_rec_input(chunk, m_impl->ov_rec_in, ocr_ov::RecChunkWidth);
+            float chunk_score = 0.0F;
+            std::string part = run_rec(ocr_ov::RecChunkWidth, chunk_score);
+            if (!part.empty()) {
+                if (!text.empty()) {
+                    const int max_overlap =
+                        std::min({ static_cast<int>(text.size()), static_cast<int>(part.size()), 8 });
+                    for (int k = max_overlap; k > 0; --k) {
+                        if (text.compare(
+                                text.size() - static_cast<std::size_t>(k),
+                                static_cast<std::size_t>(k),
+                                part,
+                                0,
+                                static_cast<std::size_t>(k)) == 0) {
+                            part.erase(0, static_cast<std::size_t>(k));
+                            break;
+                        }
+                    }
+                }
+                if (!part.empty()) {
+                    text += part;
+                    score_sum += static_cast<double>(chunk_score) * static_cast<double>(part.size());
+                    score_count += static_cast<int>(part.size());
+                }
+            }
+
+            if (x + ocr_ov::RecChunkWidth >= resized.cols) {
+                break;
+            }
+        }
+
+        out_score = score_count > 0 ? static_cast<float>(score_sum / score_count) : 0.0F;
+        return text;
+    };
+
     try {
         if (without_det) {
-            const int bucket = pick_bucket(image);
-            ocr_ov::fill_rec_input(image, m_impl->ov_rec_in, bucket);
             float score = 0.0F;
-            std::string text = run_rec(bucket, score);
+            std::string text = run_line(image, score);
             raw_results.emplace_back(Rect(0, 0, image.cols, image.rows), score, std::move(text));
         }
         else {
@@ -914,7 +1014,10 @@ OcrPack::ResultsVec
                 ov::Shape { 1, 3, ocr_ov::DetHeight, ocr_ov::DetWidth },
                 m_impl->ov_det_in.data());
             {
-                const std::lock_guard lock(ocr_ov::npu_mutex());
+                std::unique_lock<std::mutex> npu_lock;
+                if (m_impl->ov_device == "NPU") {
+                    npu_lock = std::unique_lock<std::mutex>(openvino_npu_mutex());
+                }
                 m_impl->ov_det_req.set_input_tensor(det_tensor);
                 m_impl->ov_det_req.infer();
             }
@@ -936,10 +1039,26 @@ OcrPack::ResultsVec
                 ocr_ov::UnclipRatio,
                 ocr_ov::MaxCandidates);
 
+            if (boxes.empty()) {
+                // Match FastDeploy / NCNN: when detection finds no box, treat
+                // the whole frame as one text line instead of dropping it.
+                float score = 0.0F;
+                std::string text = run_line(image, score);
+                if (!text.empty()) {
+                    raw_results.emplace_back(Rect(0, 0, image.cols, image.rows), score, std::move(text));
+                }
+            }
+
+            // The probability map may be smaller than the network input; map
+            // its coordinates back to the 960x544 input before undoing the
+            // letterbox scale.
+            const float prob_to_input_x = static_cast<float>(ocr_ov::DetWidth) / static_cast<float>(prob_w);
+            const float prob_to_input_y = static_cast<float>(ocr_ov::DetHeight) / static_cast<float>(prob_h);
+
             for (auto quad : boxes) {
                 for (auto& point : quad) {
-                    point.x /= det_scale;
-                    point.y /= det_scale;
+                    point.x = point.x * prob_to_input_x / det_scale;
+                    point.y = point.y * prob_to_input_y / det_scale;
                 }
 
                 const int left = std::clamp(
@@ -967,10 +1086,8 @@ OcrPack::ResultsVec
                     continue;
                 }
 
-                const int bucket = pick_bucket(crop);
-                ocr_ov::fill_rec_input(crop, m_impl->ov_rec_in, bucket);
                 float score = 0.0F;
-                std::string text = run_rec(bucket, score);
+                std::string text = run_line(crop, score);
                 if (text.empty()) {
                     continue;
                 }
@@ -980,19 +1097,24 @@ OcrPack::ResultsVec
     }
     catch (const std::exception& e) {
         LogError << __FUNCTION__ << "OpenVINO inference failed:" << e.what();
+        throw;
+    }
+
+    if (raw_results.size() > 1) {
+        std::stable_sort(raw_results.begin(), raw_results.end(), [](const Result& lhs, const Result& rhs) {
+            if (lhs.rect.y != rhs.rect.y) {
+                return lhs.rect.y < rhs.rect.y;
+            }
+            return lhs.rect.x < rhs.rect.x;
+        });
     }
 
     const auto costs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time).count();
     std::string class_type = utils::demangle(typeid(*this).name());
     if (!base_roi) {
-        Log.trace(
-            class_type,
-            raw_results,
-            without_det ? "by OCR Rec (OpenVINO)" : "by OCR Pipeline (OpenVINO)",
-            ", cost",
-            costs,
-            "ms");
+        LogTrace << class_type << raw_results << (without_det ? "by OCR Rec (OpenVINO)" : "by OCR Pipeline (OpenVINO)")
+                 << ", cost" << costs << "ms";
     }
     else {
         std::string output = "[";
@@ -1012,13 +1134,8 @@ OcrPack::ResultsVec
                 raw_results[i].score);
         }
         output += "]";
-        Log.trace(
-            class_type,
-            output,
-            without_det ? "by OCR Rec (OpenVINO)" : "by OCR Pipeline (OpenVINO)",
-            ", cost",
-            costs,
-            "ms");
+        LogTrace << class_type << output << (without_det ? "by OCR Rec (OpenVINO)" : "by OCR Pipeline (OpenVINO)")
+                 << ", cost" << costs << "ms";
     }
     return raw_results;
 }

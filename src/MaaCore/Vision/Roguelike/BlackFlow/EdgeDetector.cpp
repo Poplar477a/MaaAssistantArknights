@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <fstream>
+#include <mutex>
 #include <numeric>
 #include <stdexcept>
 
@@ -274,6 +275,7 @@ struct EdgeDetector::Impl
             Ort::Value::CreateTensor<float>(memory, input.data(), input.size(), shape.data(), shape.size());
         const std::array<const char*, 1> input_names { input_name.c_str() };
         const std::array<const char*, 1> output_names { output_name.c_str() };
+        auto npu_lock = OnnxSessions::acquire_npu_inference_lock();
         auto outputs =
             session->Run(Ort::RunOptions { nullptr }, input_names.data(), &tensor, 1, output_names.data(), 1);
         if (outputs.size() != 1 || !outputs.front().IsTensor()) {

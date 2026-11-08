@@ -239,7 +239,7 @@ inline cv::Mat get_rotate_crop_image(const cv::Mat& src, const std::vector<cv::P
 
     cv::Mat transform = cv::getPerspectiveTransform(pts, pts_std);
     cv::Mat dst;
-    cv::warpPerspective(img_crop, dst, transform, cv::Size(crop_w, crop_h), cv::BORDER_REPLICATE);
+    cv::warpPerspective(img_crop, dst, transform, cv::Size(crop_w, crop_h), cv::INTER_LINEAR, cv::BORDER_REPLICATE);
 
     if (static_cast<float>(dst.rows) >= static_cast<float>(dst.cols) * 1.5F) {
         cv::Mat rotated;

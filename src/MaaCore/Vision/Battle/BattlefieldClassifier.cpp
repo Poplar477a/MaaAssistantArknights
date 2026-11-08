@@ -104,6 +104,7 @@ BattlefieldClassifier::SkillReadyResult BattlefieldClassifier::skill_ready_analy
     constexpr const char* output_names[] = { "output" }; // session.GetOutputName()
 
     Ort::RunOptions run_options;
+    auto npu_lock = OnnxSessions::acquire_npu_inference_lock();
     session.Run(run_options, input_names, &input_tensor, 1, output_names, &output_tensor, 1);
     Log.info(__FUNCTION__, "raw results:", raw_results);
 
@@ -254,6 +255,7 @@ BattlefieldClassifier::DeployDirectionResult BattlefieldClassifier::deploy_direc
     constexpr const char* output_names[] = { "output" }; // session.GetOutputName()
 
     Ort::RunOptions run_options;
+    auto npu_lock = OnnxSessions::acquire_npu_inference_lock();
     session.Run(run_options, input_names, &input_tensor, 1, output_names, &output_tensor, 1);
     Log.info(__FUNCTION__, "raw result:", raw_results);
 

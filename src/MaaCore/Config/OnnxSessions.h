@@ -3,6 +3,7 @@
 #include "AbstractResource.h"
 #include "GpuDeviceSelector.h"
 
+#include <atomic>
 #include <mutex>
 #include <optional>
 #include <unordered_map>
@@ -38,6 +39,11 @@ public:
     // requested OpenVINO device cannot be initialized.
     static bool probe_openvino(OpenVINODevice device);
 
+    // True while sessions are configured to run on the OpenVINO NPU. Callers
+    // use this to take the shared NPU inference lock around Ort::Session::Run.
+    static bool npu_inference_enabled() noexcept;
+    static std::unique_lock<std::mutex> acquire_npu_inference_lock();
+
 private:
     // 以下内部函数均要求调用方已持有 m_mutex
     Ort::Session& get_or_create(const std::string& name);
@@ -58,5 +64,6 @@ private:
     std::mutex m_mutex;
     bool gpu_enabled = false;
     bool gpu_options_initialized = false;
+    std::atomic<bool> m_npu_inference_enabled { false };
 };
 }

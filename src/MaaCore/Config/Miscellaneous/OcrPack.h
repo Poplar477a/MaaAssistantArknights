@@ -5,6 +5,7 @@
 #include "Config/GpuDeviceSelector.h"
 
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -59,6 +60,7 @@ protected:
     bool create_openvino_pipeline();
     ResultsVec recognize_openvino(const cv::Mat& image, bool without_det, const std::optional<Rect>& base_roi);
     void release_openvino();
+    void abandon_openvino_objects();
     bool m_ov_active = false;
 #endif
 
@@ -66,6 +68,7 @@ protected:
     std::unique_ptr<Impl> m_impl;
     std::optional<GpuDeviceSelector> m_gpu_selector = std::nullopt;
     bool m_gpu_active = false;
+    std::mutex m_recognize_mutex;
 };
 
 class WordOcr final : public MAA_NS::SingletonHolder<WordOcr>, public OcrPack
