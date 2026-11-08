@@ -115,7 +115,7 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
         return;
     }
 
-    Log.error(__FUNCTION__, "accelerator warmup failed for", name, "; falling back to CPU mode");
+    LogError << __FUNCTION__ << "accelerator warmup failed for" << name << "; falling back to CPU mode";
     const bool leak_npu_sessions = m_npu_inference_enabled.load(std::memory_order_relaxed);
     if (leak_npu_sessions) {
         // Callers using get() hold raw session references without registering
@@ -531,9 +531,9 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
         // worker with a timeout: a hung NPU driver must not block startup.
         auto future = std::async(std::launch::async, [npu, model_path, options = std::move(options)]() mutable -> bool {
             if (npu) {
-                // Do not take openvino_npu_mutex here: a hung probe holding it
-                // would block all later NPU inference. The probe runs right
-                // after resource loading, before tasks start.
+                // Serialize the probe with OCR and ONNX inference. A driver
+                // that hangs here would also make real NPU inference unusable.
+                const std::lock_guard npu_lock(openvino_npu_mutex());
                 const std::lock_guard session_lock(probe_session_mutex);
                 if (npu_probe_session == nullptr) {
                     // Keep the probe session alive: destroying an NPU ORT

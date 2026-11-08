@@ -212,7 +212,8 @@ void fill_rec_input(const cv::Mat& crop, std::vector<float>& dst, int bucket_wid
         0,
         cv::INTER_LINEAR);
 
-    cv::Mat padded(RecHeight, bucket_width, CV_8UC3, cv::Scalar(0, 0, 0));
+    // Match the NCNN/FastDeploy preprocessing: neutral gray padding, not black.
+    cv::Mat padded(RecHeight, bucket_width, CV_8UC3, cv::Scalar(127, 127, 127));
     const int copy_w = std::min(bucket_width, resized_crop.cols);
     resized_crop(cv::Rect(0, 0, copy_w, RecHeight)).copyTo(padded(cv::Rect(0, 0, copy_w, RecHeight)));
 
