@@ -73,7 +73,7 @@ public class PerformanceUserControlModel : PropertyChangedBase
         (BackendFamily.Auto, "InferenceBackendAuto"),
         (BackendFamily.DirectML, "InferenceBackendDirectML"),
         (BackendFamily.WebGPU, "InferenceBackendWebGpu"),
-        (BackendFamily.OpenVINO, "InferenceBackendOpenVino"));
+        (BackendFamily.OpenVINO, "InferenceBackend.OpenVino"));
 
     public LocalizedObservableList<OpenVinoDeviceChoice> OpenVinoDeviceOptions { get; } = new(
         (OpenVinoDeviceChoice.CPU, "InferenceBackend.OpenVinoDevice.Cpu"),
@@ -101,12 +101,15 @@ public class PerformanceUserControlModel : PropertyChangedBase
                     ActiveBackend = InferenceBackend.WebGPU;
                     break;
                 case BackendFamily.OpenVINO:
+                    // 切换到 OpenVINO 时沿用已保存的设备；从其他后端切来时选择当前可用的设备，
+                    // 避免保存一个不可用（置灰）的选项导致启动时被回退为 Auto。
                     ActiveBackend = ActiveBackend switch
                     {
                         InferenceBackend.OpenVINOCpu => InferenceBackend.OpenVINOCpu,
                         InferenceBackend.OpenVINONpu => InferenceBackend.OpenVINONpu,
                         InferenceBackend.OpenVINOHybrid => InferenceBackend.OpenVINOHybrid,
-                        _ => InferenceBackend.OpenVINONpu,
+                        _ when OpenVinoNpuAvailable => InferenceBackend.OpenVINONpu,
+                        _ => InferenceBackend.OpenVINOCpu,
                     };
                     break;
                 default:
