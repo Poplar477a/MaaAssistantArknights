@@ -633,7 +633,7 @@ public class AsstProxy
             return;
         }
 
-        if (SettingsViewModel.PerformanceSettings.ActiveBackend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu)
+        if (SettingsViewModel.PerformanceSettings.ActiveBackend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu or InferenceBackend.OpenVINOHybrid)
         {
             return;
         }
@@ -740,8 +740,9 @@ public class AsstProxy
         ProbeOpenVino();
 
         var backend = SettingsViewModel.PerformanceSettings.ActiveBackend;
-        if (backend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu)
+        if (backend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu or InferenceBackend.OpenVINOHybrid)
         {
+            // Hybrid 的 ONNX 会话使用 NPU，因此以 NPU 可用性为准。
             var available = backend == InferenceBackend.OpenVINOCpu ? OpenVinoCpuAvailable : OpenVinoNpuAvailable;
             if (!available)
             {
@@ -760,6 +761,7 @@ public class AsstProxy
         {
             InferenceBackend.OpenVINOCpu => "openvino:cpu",
             InferenceBackend.OpenVINONpu => "openvino:npu",
+            InferenceBackend.OpenVINOHybrid => "openvino:hybrid",
             _ => null,
         };
 
@@ -779,10 +781,13 @@ public class AsstProxy
             _logger.Warning("Failed to apply inference device selector {Selector}", selector);
         }
 
-        if (backend == InferenceBackend.OpenVINONpu)
+        if (backend is InferenceBackend.OpenVINONpu or InferenceBackend.OpenVINOHybrid)
         {
-            var warning = LocalizationHelper.GetString("InferenceBackend.OpenVinoNpu.Warning");
-            _logger.Warning("OpenVINO NPU is experimental: {Warning}", warning);
+            var warning = LocalizationHelper.GetString(
+                backend == InferenceBackend.OpenVINOHybrid
+                    ? "InferenceBackend.OpenVinoHybrid.Warning"
+                    : "InferenceBackend.OpenVinoNpu.Warning");
+            _logger.Warning("OpenVINO NPU backend is experimental: {Warning}", warning);
             Instances.TaskQueueViewModel.AddLog(warning, UiLogColor.Warning);
         }
 

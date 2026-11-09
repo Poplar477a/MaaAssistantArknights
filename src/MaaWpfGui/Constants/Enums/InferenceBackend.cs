@@ -41,4 +41,10 @@ public enum InferenceBackend
     /// Intel OpenVINO 后端，使用 NPU 设备。
     /// </summary>
     OpenVINONpu = 4,
+
+    /// <summary>
+    /// Intel OpenVINO 混合后端：OCR 使用 CPU，ONNX 会话使用 NPU。
+    /// NPU 只加速 ONNX 会话，并非全链路加速。
+    /// </summary>
+    OpenVINOHybrid = 5,
 }

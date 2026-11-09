@@ -102,6 +102,14 @@
             Text="{DynamicResource InferenceBackend.OpenVinoNpu.Warning}"
             TextWrapping="Wrap"
             Visibility="{c:Binding IsOpenVinoNpuSelected}" />
+        <TextBlock
+            MaxWidth="440"
+            Margin="8,8,8,0"
+            HorizontalAlignment="Center"
+            Foreground="{DynamicResource WarningBrush}"
+            Text="{DynamicResource InferenceBackend.OpenVinoHybrid.Warning}"
+            TextWrapping="Wrap"
+            Visibility="{c:Binding IsOpenVinoHybridSelected}" />
         <StackPanel
             Margin="10"
             HorizontalAlignment="Center"

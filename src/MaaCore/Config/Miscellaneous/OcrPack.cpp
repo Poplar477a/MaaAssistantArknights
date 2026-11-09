@@ -908,7 +908,8 @@ bool OcrPack::create_openvino_pipeline()
         request.infer();
     };
 
-    std::string requested_device = m_gpu_selector->openvino_device() == OpenVINODevice::NPU ? "NPU" : "CPU";
+    // Hybrid keeps OCR on OpenVINO CPU; the NPU is reserved for ONNX sessions.
+    std::string requested_device = m_gpu_selector->openvino_ocr_device() == OpenVINODevice::NPU ? "NPU" : "CPU";
     if (auto device_id = m_gpu_selector->resolve_device_id(); device_id && *device_id > 0) {
         requested_device += "." + std::to_string(*device_id);
     }

@@ -74,7 +74,8 @@ public class PerformanceUserControlModel : PropertyChangedBase
         (InferenceBackend.DirectML, "InferenceBackendDirectML"),
         (InferenceBackend.WebGPU, "InferenceBackendWebGpu"),
         (InferenceBackend.OpenVINOCpu, "InferenceBackend.OpenVinoCpu"),
-        (InferenceBackend.OpenVINONpu, "InferenceBackend.OpenVinoNpu"));
+        (InferenceBackend.OpenVINONpu, "InferenceBackend.OpenVinoNpu"),
+        (InferenceBackend.OpenVINOHybrid, "InferenceBackend.OpenVinoHybrid"));
 
     public InferenceBackend ActiveBackend
     {
@@ -104,10 +105,13 @@ public class PerformanceUserControlModel : PropertyChangedBase
     }
 
     [PropertyDependsOn(nameof(ActiveBackend))]
-    public bool IsGpuSelectionVisible => ActiveBackend is not (InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu);
+    public bool IsGpuSelectionVisible => ActiveBackend is not (InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu or InferenceBackend.OpenVINOHybrid);
 
     [PropertyDependsOn(nameof(ActiveBackend))]
     public bool IsOpenVinoNpuSelected => ActiveBackend == InferenceBackend.OpenVINONpu;
+
+    [PropertyDependsOn(nameof(ActiveBackend))]
+    public bool IsOpenVinoHybridSelected => ActiveBackend == InferenceBackend.OpenVINOHybrid;
 
     public bool OpenVinoCpuAvailable => !AsstProxy.OpenVinoProbed || AsstProxy.OpenVinoCpuAvailable;
 

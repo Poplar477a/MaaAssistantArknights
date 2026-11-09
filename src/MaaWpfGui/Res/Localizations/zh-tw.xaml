@@ -1307,6 +1307,8 @@ DEBUG 目錄下儲存的圖片有數量限制，超出後會自動清理舊圖�
     <system:String x:Key="InferenceBackend.OpenVinoCpu">OpenVINO CPU (實驗性)</system:String>
     <system:String x:Key="InferenceBackend.OpenVinoNpu">OpenVINO NPU (實驗性)</system:String>
     <system:String x:Key="InferenceBackend.OpenVinoNpu.Warning">OpenVINO NPU 為實驗性後端：需要可用的 Intel NPU 驅動；部分模型或驅動版本可能不相容，可能崩潰或自動回退到 CPU。建議先小規模驗證任務。</system:String>
+    <system:String x:Key="InferenceBackend.OpenVinoHybrid">OpenVINO Hybrid（CPU OCR + NPU ONNX，實驗性）</system:String>
+    <system:String x:Key="InferenceBackend.OpenVinoHybrid.Warning">OpenVINO Hybrid 為實驗性後端：OCR 使用 OpenVINO CPU，NPU 僅加速 ONNX 工作階段（Only ONNX），並非全鏈路 NPU 加速。需要可用的 Intel NPU 驅動；部分模型或驅動版本可能不相容，可能當機或自動回退到 CPU。建議先小規模驗證任務。</system:String>
     <system:String x:Key="InferenceBackend.Unavailable.Warning">所選的 OpenVINO 後端在目前建置或裝置上不可用，已回退到自動選擇。</system:String>
     <system:String x:Key="InferenceBackendAuto">自動 (推薦)</system:String>
     <system:String x:Key="InferenceBackendDirectML">DirectML</system:String>

@@ -50,6 +50,11 @@ public:
             else if (device_name == "npu") {
                 result.m_openvino_device = OpenVINODevice::NPU;
             }
+            else if (device_name == "hybrid") {
+                // OCR keeps running on OpenVINO CPU; only ONNX sessions use the NPU.
+                result.m_openvino_device = OpenVINODevice::NPU;
+                result.m_openvino_hybrid = true;
+            }
             else {
                 return std::nullopt;
             }
@@ -122,6 +127,14 @@ public:
     // Only meaningful when backend() == InferenceBackend::OpenVINO.
     [[nodiscard]] OpenVINODevice openvino_device() const noexcept { return m_openvino_device; }
 
+    // Hybrid runs OCR on OpenVINO CPU while ONNX sessions use the NPU.
+    [[nodiscard]] bool openvino_hybrid() const noexcept { return m_openvino_hybrid; }
+
+    [[nodiscard]] OpenVINODevice openvino_ocr_device() const noexcept
+    {
+        return m_openvino_hybrid ? OpenVINODevice::CPU : m_openvino_device;
+    }
+
     [[nodiscard]] std::optional<int> resolve_device_id() const;
 
     bool operator==(const GpuDeviceSelector&) const = default;
@@ -131,5 +144,6 @@ private:
     std::optional<uint64_t> m_adapter_luid;
     InferenceBackend m_backend = InferenceBackend::Auto;
     OpenVINODevice m_openvino_device = OpenVINODevice::CPU;
+    bool m_openvino_hybrid = false;
 };
 } // namespace asst
