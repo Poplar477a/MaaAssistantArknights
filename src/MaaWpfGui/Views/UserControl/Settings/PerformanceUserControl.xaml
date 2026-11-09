@@ -68,32 +68,58 @@
             Background="{DynamicResource RegionBrushOpacity25}"
             DisplayMemberPath="Display"
             IsEnabled="{c:Binding 'IsGpuEnabled or !IsGpuSelectionVisible'}"
-            ItemsSource="{Binding BackendOptions}"
+            ItemsSource="{Binding BackendFamilyOptions}"
             PreviewMouseWheel="{s:Action DisableComboBoxScrollWhenClosed,
                                          Target={x:Type helper:MouseWheelHelper}}"
-            SelectedValue="{Binding ActiveBackend}"
-            SelectedValuePath="Value">
-            <hc:ComboBox.ItemContainerStyle>
-                <Style BasedOn="{StaticResource ComboBoxItemBaseStyle}" TargetType="{x:Type ComboBoxItem}">
-                    <Style.Triggers>
-                        <MultiDataTrigger>
-                            <MultiDataTrigger.Conditions>
-                                <Condition Binding="{Binding Value}" Value="{x:Static enums:InferenceBackend.OpenVINOCpu}" />
-                                <Condition Binding="{Binding DataContext.OpenVinoCpuAvailable, RelativeSource={RelativeSource AncestorType=hc:ComboBox}}" Value="False" />
-                            </MultiDataTrigger.Conditions>
-                            <Setter Property="IsEnabled" Value="False" />
-                        </MultiDataTrigger>
-                        <MultiDataTrigger>
-                            <MultiDataTrigger.Conditions>
-                                <Condition Binding="{Binding Value}" Value="{x:Static enums:InferenceBackend.OpenVINONpu}" />
-                                <Condition Binding="{Binding DataContext.OpenVinoNpuAvailable, RelativeSource={RelativeSource AncestorType=hc:ComboBox}}" Value="False" />
-                            </MultiDataTrigger.Conditions>
-                            <Setter Property="IsEnabled" Value="False" />
-                        </MultiDataTrigger>
-                    </Style.Triggers>
-                </Style>
-            </hc:ComboBox.ItemContainerStyle>
-        </hc:ComboBox>
+            SelectedValue="{Binding ActiveBackendFamily}"
+            SelectedValuePath="Value" />
+        <StackPanel Visibility="{c:Binding IsOpenVinoDeviceVisible}">
+            <StackPanel
+                Margin="8,15,0,5"
+                HorizontalAlignment="Center"
+                Orientation="Horizontal">
+                <controls:TextBlock Text="{DynamicResource InferenceBackend.OpenVinoDevice}" />
+            </StackPanel>
+            <hc:ComboBox
+                Width="250"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Background="{DynamicResource RegionBrushOpacity25}"
+                DisplayMemberPath="Display"
+                ItemsSource="{Binding OpenVinoDeviceOptions}"
+                PreviewMouseWheel="{s:Action DisableComboBoxScrollWhenClosed,
+                                             Target={x:Type helper:MouseWheelHelper}}"
+                SelectedValue="{Binding ActiveOpenVinoDevice}"
+                SelectedValuePath="Value">
+                <hc:ComboBox.ItemContainerStyle>
+                    <Style BasedOn="{StaticResource ComboBoxItemBaseStyle}" TargetType="{x:Type ComboBoxItem}">
+                        <Style.Triggers>
+                            <MultiDataTrigger>
+                                <MultiDataTrigger.Conditions>
+                                    <Condition Binding="{Binding Value}" Value="{x:Static enums:OpenVinoDeviceChoice.CPU}" />
+                                    <Condition Binding="{Binding DataContext.OpenVinoCpuAvailable, RelativeSource={RelativeSource AncestorType=hc:ComboBox}}" Value="False" />
+                                </MultiDataTrigger.Conditions>
+                                <Setter Property="IsEnabled" Value="False" />
+                            </MultiDataTrigger>
+                            <MultiDataTrigger>
+                                <MultiDataTrigger.Conditions>
+                                    <Condition Binding="{Binding Value}" Value="{x:Static enums:OpenVinoDeviceChoice.NPU}" />
+                                    <Condition Binding="{Binding DataContext.OpenVinoNpuAvailable, RelativeSource={RelativeSource AncestorType=hc:ComboBox}}" Value="False" />
+                                </MultiDataTrigger.Conditions>
+                                <Setter Property="IsEnabled" Value="False" />
+                            </MultiDataTrigger>
+                            <MultiDataTrigger>
+                                <MultiDataTrigger.Conditions>
+                                    <Condition Binding="{Binding Value}" Value="{x:Static enums:OpenVinoDeviceChoice.Hybrid}" />
+                                    <Condition Binding="{Binding DataContext.OpenVinoNpuAvailable, RelativeSource={RelativeSource AncestorType=hc:ComboBox}}" Value="False" />
+                                </MultiDataTrigger.Conditions>
+                                <Setter Property="IsEnabled" Value="False" />
+                            </MultiDataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </hc:ComboBox.ItemContainerStyle>
+            </hc:ComboBox>
+        </StackPanel>
         <TextBlock
             MaxWidth="440"
             Margin="8,8,8,0"

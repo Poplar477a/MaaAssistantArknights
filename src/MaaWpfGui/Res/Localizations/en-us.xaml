@@ -1308,6 +1308,11 @@ Cache files (such as maps, operator avatars, etc.) need to be regenerated after 
     <system:String x:Key="InferenceBackend.OpenVinoNpu.Warning">OpenVINO NPU is experimental: it requires a working Intel NPU driver. Some models or driver versions may be incompatible and cause crashes or an automatic fallback to CPU. Validate tasks on a small scale first.</system:String>
     <system:String x:Key="InferenceBackend.OpenVinoHybrid">OpenVINO Hybrid (CPU OCR + NPU ONNX, Experimental)</system:String>
     <system:String x:Key="InferenceBackend.OpenVinoHybrid.Warning">OpenVINO Hybrid is experimental: OCR runs on OpenVINO CPU, while NPU only accelerates ONNX sessions — it is not full-pipeline NPU acceleration. It requires a working Intel NPU driver; some models or driver versions may be incompatible and cause crashes or an automatic fallback to CPU. Validate tasks on a small scale first.</system:String>
+    <system:String x:Key="InferenceBackendOpenVino">OpenVINO (Experimental)</system:String>
+    <system:String x:Key="InferenceBackend.OpenVinoDevice">OpenVINO device</system:String>
+    <system:String x:Key="InferenceBackend.OpenVinoDevice.Cpu">CPU</system:String>
+    <system:String x:Key="InferenceBackend.OpenVinoDevice.Npu">NPU</system:String>
+    <system:String x:Key="InferenceBackend.OpenVinoDevice.Hybrid">Hybrid (CPU+NPU)</system:String>
     <system:String x:Key="InferenceBackend.Unavailable.Warning">The selected OpenVINO backend is unavailable in this build or on this device; falling back to Auto.</system:String>
     <system:String x:Key="InferenceBackendAuto">Auto (Recommended)</system:String>
     <system:String x:Key="InferenceBackendDirectML">DirectML</system:String>
