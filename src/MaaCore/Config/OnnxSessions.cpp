@@ -29,11 +29,18 @@ namespace asst::onnx_session_detail
 {
 // Destroying an ORT session on the OpenVINO NPU can crash inside the plugin.
 // Keep abandoned sessions alive for the process lifetime instead.
-void abandon_ort_session(std::string name, Ort::Session session)
+void abandon_ort_session(std::string name, std::shared_ptr<Ort::Session> session)
 {
-    static auto* abandoned = new std::vector<std::pair<std::string, Ort::Session>>();
+    static auto* abandoned = new std::vector<std::pair<std::string, std::shared_ptr<Ort::Session>>>();
     static std::mutex abandoned_mutex;
     const std::lock_guard lock(abandoned_mutex);
+    if (abandoned->size() >= 128) {
+        // 反复热重载会累积已泄漏的 NPU 会话；提示用户重启而非无限增长。
+        static std::atomic<bool> warned { false };
+        if (!warned.exchange(true)) {
+            LogWarn << "too many abandoned ONNX sessions; restart MAA to release NPU memory";
+        }
+    }
     abandoned->emplace_back(std::move(name), std::move(session));
 }
 }
@@ -145,13 +152,14 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
     m_gpu_selector = std::nullopt;
     gpu_enabled = false;
     gpu_options_initialized = false;
-    // Sessions still held by callers were created on the NPU; keep the lock
-    // enabled until they are all released and recreated.
-    m_npu_inference_enabled.store(!m_sessions.empty(), std::memory_order_relaxed);
+    // Abandoned NPU sessions may still be referenced by callers, so keep the NPU
+    // lock enabled; it only serializes inference, which is safe for CPU sessions.
+    m_npu_inference_enabled.store(leak_npu_sessions || !m_sessions.empty(), std::memory_order_relaxed);
 
     try {
-        const auto created = m_sessions.emplace(name, Ort::Session(m_env, m_model_paths.at(name).c_str(), m_options));
-        run(created.first->second);
+        const auto created =
+            m_sessions.emplace(name, std::make_shared<Ort::Session>(m_env, m_model_paths.at(name).c_str(), m_options));
+        run(*created.first->second);
         LogInfo << __FUNCTION__ << "| warmed up" << name << "on CPU";
     }
     catch (const Ort::Exception& ex) {
@@ -167,7 +175,7 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
 Ort::Session& asst::OnnxSessions::get_or_create(const std::string& name)
 {
     if (m_sessions.contains(name)) {
-        return m_sessions.at(name);
+        return *m_sessions.at(name);
     }
 
     if (gpu_enabled && !gpu_options_initialized && !initialize_gpu_options()) {
@@ -177,7 +185,7 @@ Ort::Session& asst::OnnxSessions::get_or_create(const std::string& name)
 
     LogInfo << __FUNCTION__ << "lazy load" << name;
     try {
-        m_sessions.emplace(name, Ort::Session(m_env, m_model_paths.at(name).c_str(), m_options));
+        m_sessions.emplace(name, std::make_shared<Ort::Session>(m_env, m_model_paths.at(name).c_str(), m_options));
     }
     catch (const Ort::Exception& ex) {
         // GPU 后端的初始化错误（例如 WebGPU EP）可能到建 session 时才暴露，退回 CPU 重试一次
@@ -191,11 +199,11 @@ Ort::Session& asst::OnnxSessions::get_or_create(const std::string& name)
         m_gpu_selector = std::nullopt;
         gpu_enabled = false;
         gpu_options_initialized = false;
-        m_npu_inference_enabled.store(!m_sessions.empty(), std::memory_order_relaxed);
-        m_sessions.emplace(name, Ort::Session(m_env, m_model_paths.at(name).c_str(), m_options));
+        // 保留 NPU 标志：已存在的 NPU 会话可能仍被调用方持有，串行锁必须继续生效。
+        m_sessions.emplace(name, std::make_shared<Ort::Session>(m_env, m_model_paths.at(name).c_str(), m_options));
     }
 
-    return m_sessions.at(name);
+    return *m_sessions.at(name);
 }
 
 Ort::Session& asst::OnnxSessions::get(const std::string& name)
@@ -543,9 +551,8 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
         // worker with a timeout: a hung NPU driver must not block startup.
         auto future = std::async(std::launch::async, [npu, model_path, options = std::move(options)]() mutable -> bool {
             if (npu) {
-                // Serialize the probe with OCR and ONNX inference. A driver
-                // that hangs here would also make real NPU inference unusable.
-                const std::lock_guard npu_lock(openvino_npu_mutex());
+                // Only serialize probes with each other: a hung probe must not
+                // keep the shared NPU inference lock and stall real work.
                 const std::lock_guard session_lock(probe_session_mutex);
                 if (npu_probe_session == nullptr) {
                     // Keep the probe session alive: destroying an NPU ORT

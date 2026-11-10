@@ -109,7 +109,8 @@ public class PerformanceUserControlModel : PropertyChangedBase
                         InferenceBackend.OpenVINONpu => InferenceBackend.OpenVINONpu,
                         InferenceBackend.OpenVINOHybrid => InferenceBackend.OpenVINOHybrid,
                         _ when OpenVinoNpuAvailable => InferenceBackend.OpenVINONpu,
-                        _ => InferenceBackend.OpenVINOCpu,
+                        _ when OpenVinoCpuAvailable => InferenceBackend.OpenVINOCpu,
+                        _ => InferenceBackend.Auto,
                     };
                     break;
                 default:

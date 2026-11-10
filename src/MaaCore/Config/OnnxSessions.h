@@ -4,6 +4,7 @@
 #include "GpuDeviceSelector.h"
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <unordered_map>
@@ -56,7 +57,9 @@ private:
 
     Ort::Env m_env;
     Ort::SessionOptions m_options;
-    std::unordered_map<std::string, Ort::Session> m_sessions;
+    // 会话用 shared_ptr 保持地址稳定：调用方持有 get()/acquire() 返回的引用期间，
+    // 缓存重建（模型路径变化或加速器回退）不能销毁对象。
+    std::unordered_map<std::string, std::shared_ptr<Ort::Session>> m_sessions;
     std::unordered_map<std::string, std::filesystem::path> m_model_paths;
     std::unordered_map<std::string, std::size_t> m_session_users;
     std::unordered_set<std::string> m_pending_reload; // 持有期间路径变化、待归零后销毁的会话
