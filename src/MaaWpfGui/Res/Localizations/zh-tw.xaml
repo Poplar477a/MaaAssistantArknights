@@ -1304,10 +1304,7 @@ DEBUG 目錄下儲存的圖片有數量限制，超出後會自動清理舊圖�
     <system:String x:Key="Guide.User">使用指引</system:String>
     <system:String x:Key="Guide.ViewLog">您可以前往 ｢{key=Settings.Title} - {key=Settings.IssueReport.Title} - {key=Error.OpenDebugFolder}｣ 查看日誌，了解錯誤發生的具體原因。</system:String>
     <system:String x:Key="InferenceBackend">推論後端</system:String>
-    <system:String x:Key="InferenceBackend.OpenVinoCpu">OpenVINO CPU (實驗性)</system:String>
-    <system:String x:Key="InferenceBackend.OpenVinoNpu">OpenVINO NPU (實驗性)</system:String>
     <system:String x:Key="InferenceBackend.OpenVinoNpu.Warning">OpenVINO NPU 為實驗性後端：需要可用的 Intel NPU 驅動；部分模型或驅動版本可能不相容，可能崩潰或自動回退到 CPU。建議先小規模驗證任務。</system:String>
-    <system:String x:Key="InferenceBackend.OpenVinoHybrid">OpenVINO Hybrid（CPU OCR + NPU ONNX，實驗性）</system:String>
     <system:String x:Key="InferenceBackend.OpenVinoHybrid.Warning">OpenVINO Hybrid 為實驗性後端：OCR 使用 OpenVINO CPU，NPU 僅加速 ONNX 工作階段（Only ONNX），並非全鏈路 NPU 加速。需要可用的 Intel NPU 驅動；部分模型或驅動版本可能不相容，可能當機或自動回退到 CPU。建議先小規模驗證任務。</system:String>
     <system:String x:Key="InferenceBackend.OpenVino">OpenVINO（實驗性）</system:String>
     <system:String x:Key="InferenceBackend.OpenVinoDevice">OpenVINO 裝置</system:String>
