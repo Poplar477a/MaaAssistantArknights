@@ -67,7 +67,6 @@
             VerticalAlignment="Center"
             Background="{DynamicResource RegionBrushOpacity25}"
             DisplayMemberPath="Display"
-            IsEnabled="{c:Binding 'IsGpuEnabled or !IsGpuSelectionVisible'}"
             ItemsSource="{Binding BackendFamilyOptions}"
             PreviewMouseWheel="{s:Action DisableComboBoxScrollWhenClosed,
                                          Target={x:Type helper:MouseWheelHelper}}"

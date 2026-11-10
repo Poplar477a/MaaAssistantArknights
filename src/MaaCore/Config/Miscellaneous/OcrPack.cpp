@@ -312,7 +312,7 @@ struct OcrPack::Impl
     struct FileStamp
     {
         std::filesystem::file_time_type mtime {};
-        std::uintmax_t size = 0;
+        std::uint64_t content_hash = 0;
 
         bool operator==(const FileStamp&) const = default;
     };
@@ -383,8 +383,20 @@ bool OcrPack::load(const std::filesystem::path& path)
     const auto file_stamp = [](const std::filesystem::path& p) -> Impl::FileStamp {
         std::error_code ec;
         const auto mtime = std::filesystem::last_write_time(p, ec);
-        const auto size = ec ? 0 : std::filesystem::file_size(p, ec);
-        return { mtime, ec ? 0 : size };
+        // FNV-1a over the file contents catches same-size replacements whose
+        // timestamp did not change (e.g. resource archives extracted in place).
+        std::uint64_t hash = 1'469'598'103'934'665'603ULL;
+        std::ifstream ifs(platform::path_to_utf8_string(p), std::ios::binary);
+        std::array<char, 64 * 1024> buffer {};
+        while (ifs) {
+            ifs.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+            const auto read = ifs.gcount();
+            for (std::streamsize i = 0; i < read; ++i) {
+                hash ^= static_cast<unsigned char>(buffer[static_cast<std::size_t>(i)]);
+                hash *= 1'099'511'628'211ULL;
+            }
+        }
+        return { mtime, ec ? 0 : hash };
     };
 
     using namespace asst::utils::path_literals;

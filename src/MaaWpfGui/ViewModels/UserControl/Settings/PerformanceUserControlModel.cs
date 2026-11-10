@@ -170,7 +170,7 @@ public class PerformanceUserControlModel : PropertyChangedBase
 
     public void SetBackendWithoutRestart(InferenceBackend backend)
     {
-        if (ConfigFactory.Root.Gui.Performance.Backend == backend)
+        if (ActiveBackend == backend)
         {
             return;
         }
@@ -204,11 +204,18 @@ public class PerformanceUserControlModel : PropertyChangedBase
         NotifyOfPropertyChange(nameof(OpenVinoCpuAvailable));
         NotifyOfPropertyChange(nameof(OpenVinoNpuAvailable));
 
-        // 探针完成时修正不可用的 NPU 选择，避免启动时被回退为 Auto。
-        if (AsstProxy.OpenVinoProbed && !OpenVinoNpuAvailable && OpenVinoCpuAvailable &&
-            ActiveBackend is InferenceBackend.OpenVINONpu or InferenceBackend.OpenVINOHybrid)
+        // 探针完成时修正不可用的选择，避免启动时被静默回退为 Auto。
+        if (AsstProxy.OpenVinoProbed &&
+            ActiveBackend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu or InferenceBackend.OpenVINOHybrid)
         {
-            SetBackendWithoutRestart(InferenceBackend.OpenVINOCpu);
+            if (!OpenVinoNpuAvailable && OpenVinoCpuAvailable)
+            {
+                SetBackendWithoutRestart(InferenceBackend.OpenVINOCpu);
+            }
+            else if (!OpenVinoCpuAvailable && !OpenVinoNpuAvailable)
+            {
+                SetBackendWithoutRestart(InferenceBackend.Auto);
+            }
         }
     }
 

@@ -97,9 +97,12 @@ bool ::AsstExtAPI::set_static_option(StaticOptionKey key, const std::string& val
     switch (key) {
     case StaticOptionKey::CpuOCR: {
         const std::lock_guard backend_lock(backend_switch_mutex);
+        if (!OnnxSessions::get_instance().use_cpu()) {
+            LogError << __FUNCTION__ << "| failed to switch ONNX sessions to CPU; keeping current backend";
+            return false;
+        }
         WordOcr::get_instance().use_cpu();
         CharOcr::get_instance().use_cpu();
-        OnnxSessions::get_instance().use_cpu();
         return true;
     } break;
     case StaticOptionKey::GpuOCR: {
