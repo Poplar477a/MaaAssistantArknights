@@ -699,28 +699,28 @@ public class AsstProxy
 
         try
         {
-            // Probe both devices in parallel with per-task deadlines. Waiting
+            // Probe both devices in parallel with one shared deadline. Waiting
             // independently keeps one faulting probe from discarding the other
-            // probe's successful result.
+            // probe's successful result without doubling the startup delay.
             var cpuTask = Task.Run(() => AsstSetStaticOption(AsstStaticOptionKey.OpenVINOProbe, "cpu"));
             var npuTask = Task.Run(() => AsstSetStaticOption(AsstStaticOptionKey.OpenVINOProbe, "npu"));
-            try
+            var deadline = DateTime.UtcNow.AddSeconds(6);
+
+            void WaitProbe(Task task, string device)
             {
-                cpuTask.Wait(TimeSpan.FromSeconds(6));
-            }
-            catch (AggregateException ex)
-            {
-                _logger.Warning(ex, "OpenVINO CPU probe failed");
+                var remaining = deadline - DateTime.UtcNow;
+                try
+                {
+                    task.Wait(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero);
+                }
+                catch (AggregateException ex)
+                {
+                    _logger.Warning(ex, "OpenVINO {Device} probe failed", device);
+                }
             }
 
-            try
-            {
-                npuTask.Wait(TimeSpan.FromSeconds(6));
-            }
-            catch (AggregateException ex)
-            {
-                _logger.Warning(ex, "OpenVINO NPU probe failed");
-            }
+            WaitProbe(cpuTask, "CPU");
+            WaitProbe(npuTask, "NPU");
 
             OpenVinoCpuAvailable = cpuTask.IsCompletedSuccessfully && cpuTask.Result;
             OpenVinoNpuAvailable = npuTask.IsCompletedSuccessfully && npuTask.Result;

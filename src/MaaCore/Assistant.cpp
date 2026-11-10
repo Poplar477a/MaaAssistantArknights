@@ -2,6 +2,7 @@
 
 #include "MaaUtils/NoWarningCV.hpp"
 #include <meojson/json.hpp>
+#include <mutex>
 #include <new>
 #include <ranges>
 #include <string_view>
@@ -98,9 +99,12 @@ bool ::AsstExtAPI::set_static_option(StaticOptionKey key, const std::string& val
         return true;
     } break;
     case StaticOptionKey::GpuOCR: {
+        // 串行化完整的后端切换，避免 ONNX 与两个 OCR 实例停留在不同后端。
+        static std::mutex backend_switch_mutex;
+        const std::lock_guard backend_lock(backend_switch_mutex);
         const auto selector = GpuDeviceSelector::parse(value);
         if (!selector) {
-            Log.error(__FUNCTION__, "| invalid GPU selector:", value);
+            LogError << __FUNCTION__ << "| invalid GPU selector:" << value;
             return false;
         }
 

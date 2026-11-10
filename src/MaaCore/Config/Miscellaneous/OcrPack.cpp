@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <exception>
 #include <filesystem>
 #include <thread>
@@ -798,6 +799,14 @@ void OcrPack::release_openvino()
 
 void OcrPack::abandon_openvino_objects()
 {
+    static std::atomic<int> leak_count { 0 };
+    if (leak_count.fetch_add(1) >= 32) {
+        static std::atomic<bool> warned { false };
+        if (!warned.exchange(true)) {
+            LogWarn << __FUNCTION__ << "| too many abandoned OpenVINO OCR models; restart MAA to release NPU memory";
+        }
+    }
+
     // Releasing a partially initialized NPU model can crash inside
     // openvino_intel_npu_plugin.dll. Move the objects to a deliberately leaked
     // holder so the CPU/FastDeploy fallback can proceed safely.

@@ -191,6 +191,11 @@ Ort::Session& asst::OnnxSessions::get_or_create(const std::string& name)
     }
 
     LogInfo << __FUNCTION__ << "lazy load" << name;
+    // NPU 会话编译与原生 OCR 共用插件，必须与 OCR 串行。
+    std::unique_lock<std::mutex> npu_guard;
+    if (m_npu_inference_enabled.load(std::memory_order_relaxed)) {
+        npu_guard = std::unique_lock<std::mutex>(openvino_npu_mutex());
+    }
     try {
         m_sessions.emplace(name, std::make_shared<Ort::Session>(m_env, m_model_paths.at(name).c_str(), m_options));
     }
@@ -206,10 +211,7 @@ Ort::Session& asst::OnnxSessions::get_or_create(const std::string& name)
         m_gpu_selector = std::nullopt;
         gpu_enabled = false;
         gpu_options_initialized = false;
-        // 没有存量会话时清除 NPU 标志；若已有会话，调用方可能仍持有其引用。
-        if (m_sessions.empty()) {
-            m_npu_inference_enabled.store(false, std::memory_order_relaxed);
-        }
+        // 不清除 NPU 标志：已放弃的 NPU 会话可能仍被调用方持有并在运行。
         m_sessions.emplace(name, std::make_shared<Ort::Session>(m_env, m_model_paths.at(name).c_str(), m_options));
     }
 
