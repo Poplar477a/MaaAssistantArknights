@@ -212,6 +212,10 @@ public class PerformanceUserControlModel : PropertyChangedBase
             {
                 SetBackendWithoutRestart(InferenceBackend.OpenVINOCpu);
             }
+            else if (!OpenVinoCpuAvailable && OpenVinoNpuAvailable)
+            {
+                SetBackendWithoutRestart(InferenceBackend.OpenVINONpu);
+            }
             else if (!OpenVinoCpuAvailable && !OpenVinoNpuAvailable)
             {
                 SetBackendWithoutRestart(InferenceBackend.Auto);

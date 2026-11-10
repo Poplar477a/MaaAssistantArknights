@@ -766,8 +766,13 @@ public class AsstProxy
 
         if (backend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu or InferenceBackend.OpenVINOHybrid)
         {
-            // Hybrid 的 ONNX 会话使用 NPU，因此以 NPU 可用性为准。
-            var available = backend == InferenceBackend.OpenVINOCpu ? OpenVinoCpuAvailable : OpenVinoNpuAvailable;
+            // Hybrid 同时需要 OpenVINO CPU（OCR）与 NPU（ONNX）。
+            var available = backend switch
+            {
+                InferenceBackend.OpenVINOCpu => OpenVinoCpuAvailable,
+                InferenceBackend.OpenVINOHybrid => OpenVinoCpuAvailable && OpenVinoNpuAvailable,
+                _ => OpenVinoNpuAvailable,
+            };
             if (!available)
             {
                 var warning = LocalizationHelper.GetString("InferenceBackend.Unavailable.Warning");

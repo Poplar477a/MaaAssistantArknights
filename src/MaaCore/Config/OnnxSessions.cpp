@@ -520,7 +520,7 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
 {
     // SessionOptions needs a registered default logger; the singleton's Env is
     // not reachable from this static query, so keep one probe-only Env alive.
-    static Ort::Env probe_env(ORT_LOGGING_LEVEL_WARNING, "openvino-probe");
+    static Ort::Env* probe_env = new Ort::Env(ORT_LOGGING_LEVEL_WARNING, "openvino-probe");
     static std::mutex probe_session_mutex;
     static Ort::Session* npu_probe_session = nullptr;
 
@@ -569,12 +569,12 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
                 if (npu_probe_session == nullptr) {
                     // Keep the probe session alive: destroying an NPU ORT
                     // session can crash inside the plugin.
-                    npu_probe_session = new Ort::Session(probe_env, model_path.c_str(), options);
+                    npu_probe_session = new Ort::Session(*probe_env, model_path.c_str(), options);
                 }
                 run_probe_session(*npu_probe_session);
             }
             else {
-                Ort::Session session(probe_env, model_path.c_str(), options);
+                Ort::Session session(*probe_env, model_path.c_str(), options);
                 run_probe_session(session);
             }
             // ORT does not expose per-node device assignment. A successful run
@@ -612,12 +612,9 @@ std::unique_lock<std::timed_mutex> asst::OnnxSessions::acquire_npu_inference_loc
     if (!npu_inference_enabled()) {
         return {};
     }
-    std::unique_lock<std::timed_mutex> lock(openvino_npu_mutex(), std::defer_lock);
-    if (!lock.try_lock_for(std::chrono::seconds(30))) {
-        LogWarn << __FUNCTION__ << "| NPU lock timeout, continuing without serialization";
-        return {};
-    }
-    return lock;
+    // 必须真正持有锁才允许推理；等待而不是超时后无锁运行，避免与 OCR/NPU
+    // 插件并发。驱动卡死的场景由探针的超时与重启策略兜底。
+    return std::unique_lock<std::timed_mutex>(openvino_npu_mutex());
 }
 
 asst::OnnxSessions::~OnnxSessions()
