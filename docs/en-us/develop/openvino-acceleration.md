@@ -22,7 +22,7 @@ Select OpenVINO as the inference backend in ｢Settings - Performance｣, then c
 The main release does not ship the OpenVINO runtime. Install the separate acceleration pack:
 
 1. Build MaaDeps with the OpenVINO feature (`--openvino`)
-2. Package with `openvino-pack/package.sh`, install or roll back with `install.ps1`
+2. Package with `openvino-pack/package.sh` in the MaaDeps repository, then install or roll back with `install.ps1` (these scripts are not part of the main MAA repository)
 
 The pack contains ONNX Runtime with the OpenVINO execution provider, the OpenVINO CPU/NPU runtime, and an optional MaaCore build with native OCR.
 

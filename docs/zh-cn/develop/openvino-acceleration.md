@@ -22,7 +22,7 @@ MAA 支持 Intel OpenVINO 作为可选推理后端，可加速 ONNX 会话与 OC
 主发布包不包含 OpenVINO 运行时，需要额外的加速包：
 
 1. 使用 MaaDeps 的 OpenVINO 可选构建（`--openvino`）生成运行时
-2. 使用 `openvino-pack/package.sh` 打包，`install.ps1` 安装或回滚
+2. 使用 MaaDeps 仓库中的 `openvino-pack/package.sh` 打包，`install.ps1` 安装或回滚（脚本不随 MAA 主仓库发布）
 
 加速包包含带 OpenVINO 执行提供器的 ONNX Runtime、OpenVINO CPU/NPU 运行时，以及启用原生 OCR 的 MaaCore 变体。
 

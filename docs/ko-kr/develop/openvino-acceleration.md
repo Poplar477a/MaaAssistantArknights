@@ -22,7 +22,7 @@ MAA는 Intel OpenVINO를 선택적 추론 백엔드로 지원하며 ONNX 세션�
 메인 릴리스에는 OpenVINO 런타임이 포함되지 않습니다. 별도의 가속 팩이 필요합니다:
 
 1. OpenVINO 기능(`--openvino`)으로 MaaDeps 빌드
-2. `openvino-pack/package.sh`로 패키징하고 `install.ps1`로 설치 또는 롤백
+2. MaaDeps 저장소의 `openvino-pack/package.sh`로 패키징한 뒤 `install.ps1`로 설치 또는 롤백합니다(이 스크립트는 MAA 본체 저장소에 포함되지 않습니다)
 
 팩에는 OpenVINO 실행 공급자가 포함된 ONNX Runtime, OpenVINO CPU/NPU 런타임, 네이티브 OCR이 활성화된 MaaCore가 포함됩니다.
 

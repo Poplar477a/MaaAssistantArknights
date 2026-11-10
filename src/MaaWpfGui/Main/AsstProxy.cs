@@ -699,12 +699,29 @@ public class AsstProxy
 
         try
         {
-            // Probe both devices in parallel with a shared deadline. The probe
-            // must finish before the backend selector is applied, so a hung
-            // device falls back to Auto before any NPU inference starts.
+            // Probe both devices in parallel with per-task deadlines. Waiting
+            // independently keeps one faulting probe from discarding the other
+            // probe's successful result.
             var cpuTask = Task.Run(() => AsstSetStaticOption(AsstStaticOptionKey.OpenVINOProbe, "cpu"));
             var npuTask = Task.Run(() => AsstSetStaticOption(AsstStaticOptionKey.OpenVINOProbe, "npu"));
-            Task.WaitAll([cpuTask, npuTask], TimeSpan.FromSeconds(6));
+            try
+            {
+                cpuTask.Wait(TimeSpan.FromSeconds(6));
+            }
+            catch (AggregateException ex)
+            {
+                _logger.Warning(ex, "OpenVINO CPU probe failed");
+            }
+
+            try
+            {
+                npuTask.Wait(TimeSpan.FromSeconds(6));
+            }
+            catch (AggregateException ex)
+            {
+                _logger.Warning(ex, "OpenVINO NPU probe failed");
+            }
+
             OpenVinoCpuAvailable = cpuTask.IsCompletedSuccessfully && cpuTask.Result;
             OpenVinoNpuAvailable = npuTask.IsCompletedSuccessfully && npuTask.Result;
         }
@@ -734,12 +751,19 @@ public class AsstProxy
             return;
         }
 
-        // Probe before applying the selector: a timed-out NPU probe then falls
-        // back to Auto instead of leaving a background request holding the NPU
-        // lock that later inference would wait on.
-        ProbeOpenVino();
-
         var backend = SettingsViewModel.PerformanceSettings.ActiveBackend;
+
+        // Only block startup on the OpenVINO probe when that backend is selected;
+        // otherwise probe in the background so a slow device cannot delay loading.
+        if (backend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu or InferenceBackend.OpenVINOHybrid)
+        {
+            ProbeOpenVino();
+        }
+        else
+        {
+            _ = Task.Run(ProbeOpenVino);
+        }
+
         if (backend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu or InferenceBackend.OpenVINOHybrid)
         {
             // Hybrid 的 ONNX 会话使用 NPU，因此以 NPU 可用性为准。

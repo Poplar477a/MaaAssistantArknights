@@ -158,9 +158,14 @@ public class PerformanceUserControlModel : PropertyChangedBase
 
             ConfigFactory.Root.Gui.Performance.Backend = value;
             NotifyOfPropertyChange();
-            SettingsViewModel.AskRestartToApplySettings();
+            if (!_suppressRestartPrompt)
+            {
+                SettingsViewModel.AskRestartToApplySettings();
+            }
         }
     }
+
+    private bool _suppressRestartPrompt;
 
     public void SetBackendWithoutRestart(InferenceBackend backend)
     {
@@ -169,8 +174,15 @@ public class PerformanceUserControlModel : PropertyChangedBase
             return;
         }
 
-        ConfigFactory.Root.Gui.Performance.Backend = backend;
-        NotifyOfPropertyChange(nameof(ActiveBackend));
+        _suppressRestartPrompt = true;
+        try
+        {
+            ActiveBackend = backend;
+        }
+        finally
+        {
+            _suppressRestartPrompt = false;
+        }
     }
 
     [PropertyDependsOn(nameof(ActiveBackend))]

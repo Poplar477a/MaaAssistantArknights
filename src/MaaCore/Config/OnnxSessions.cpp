@@ -59,9 +59,9 @@ bool asst::OnnxSessions::load(const std::filesystem::path& path)
             m_pending_reload.insert(name);
         }
         else if (auto session = m_sessions.find(name); session != m_sessions.end()) {
-            if (m_npu_inference_enabled.load(std::memory_order_relaxed)) {
-                onnx_session_detail::abandon_ort_session(session->first, std::move(session->second));
-            }
+            // Callers may still hold the reference returned by get(); keep the
+            // object alive instead of destroying it with the cache entry.
+            onnx_session_detail::abandon_ort_session(session->first, std::move(session->second));
             m_sessions.erase(session);
         }
     }
@@ -137,13 +137,17 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
         m_pending_reload.clear();
     }
     else {
-        m_sessions.erase(name);
+        if (auto iter = m_sessions.find(name); iter != m_sessions.end()) {
+            onnx_session_detail::abandon_ort_session(iter->first, std::move(iter->second));
+            m_sessions.erase(iter);
+        }
         for (auto iter = m_sessions.begin(); iter != m_sessions.end();) {
             if (m_session_users.contains(iter->first)) {
                 m_pending_reload.insert(iter->first);
                 ++iter;
             }
             else {
+                onnx_session_detail::abandon_ort_session(iter->first, std::move(iter->second));
                 iter = m_sessions.erase(iter);
             }
         }
@@ -164,7 +168,10 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
     }
     catch (const Ort::Exception& ex) {
         LogError << __FUNCTION__ << "Failed to recreate" << name << "on CPU:" << ex.what();
-        m_sessions.erase(name);
+        if (auto iter = m_sessions.find(name); iter != m_sessions.end()) {
+            onnx_session_detail::abandon_ort_session(iter->first, std::move(iter->second));
+            m_sessions.erase(iter);
+        }
         throw;
     }
     catch (const std::exception& e) {
@@ -199,7 +206,10 @@ Ort::Session& asst::OnnxSessions::get_or_create(const std::string& name)
         m_gpu_selector = std::nullopt;
         gpu_enabled = false;
         gpu_options_initialized = false;
-        // 保留 NPU 标志：已存在的 NPU 会话可能仍被调用方持有，串行锁必须继续生效。
+        // 没有存量会话时清除 NPU 标志；若已有会话，调用方可能仍持有其引用。
+        if (m_sessions.empty()) {
+            m_npu_inference_enabled.store(false, std::memory_order_relaxed);
+        }
         m_sessions.emplace(name, std::make_shared<Ort::Session>(m_env, m_model_paths.at(name).c_str(), m_options));
     }
 
@@ -231,18 +241,15 @@ void asst::OnnxSessions::release(const std::string& name)
     if (--found->second == 0) {
         m_session_users.erase(found);
         if (m_pending_reload.erase(name) > 0) {
-            // 持有期间模型路径变化过，最后一个引用释放后销毁旧会话，下次 acquire 按新路径重建
+            // 持有期间模型路径变化过，最后一个引用释放后放弃旧会话，下次 acquire 按新路径重建。
+            // 不销毁：其他调用方可能仍持有 get() 返回的引用。
             if (auto iter = m_sessions.find(name); iter != m_sessions.end()) {
-                if (m_npu_inference_enabled.load(std::memory_order_relaxed)) {
-                    onnx_session_detail::abandon_ort_session(iter->first, std::move(iter->second));
-                }
+                onnx_session_detail::abandon_ort_session(iter->first, std::move(iter->second));
                 m_sessions.erase(iter);
             }
             LogInfo << __FUNCTION__ << "stale session destroyed after last release" << name;
         }
-        if (!gpu_enabled && m_sessions.empty()) {
-            m_npu_inference_enabled.store(false, std::memory_order_relaxed);
-        }
+        // 不依据缓存内容清除 NPU 标志：在途引用可能仍在 NPU 上运行，串行锁必须保持生效。
         LogInfo << __FUNCTION__ << "released" << name;
     }
 }
@@ -291,9 +298,7 @@ bool asst::OnnxSessions::use_cpu_locked()
     m_gpu_selector = std::nullopt;
     gpu_enabled = false;
     gpu_options_initialized = false;
-    // Guarded by the early return above, so this only runs when no session
-    // (and therefore no NPU holder) remains.
-    m_npu_inference_enabled.store(!m_sessions.empty(), std::memory_order_relaxed);
+    // 不在此清除 NPU 标志：已放弃的 NPU 会话可能仍被调用方持有并在运行。
     return true;
 }
 
@@ -337,7 +342,7 @@ bool asst::OnnxSessions::initialize_gpu_options()
     }
 
     const auto backend = m_gpu_selector->backend();
-    m_npu_inference_enabled.store(false, std::memory_order_relaxed);
+    // 不在此清除 NPU 标志：已放弃的 NPU 会话可能仍被在途调用使用。
     auto all_providers = Ort::GetAvailableProviders();
     bool support_cuda = false;
 #ifdef WITH_DML
@@ -551,8 +556,13 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
         // worker with a timeout: a hung NPU driver must not block startup.
         auto future = std::async(std::launch::async, [npu, model_path, options = std::move(options)]() mutable -> bool {
             if (npu) {
-                // Only serialize probes with each other: a hung probe must not
-                // keep the shared NPU inference lock and stall real work.
+                // Do not probe while NPU inference or OCR is active: take the
+                // shared lock opportunistically instead of racing the plugin.
+                std::unique_lock npu_lock(openvino_npu_mutex(), std::try_to_lock);
+                if (!npu_lock.owns_lock()) {
+                    LogInfo << __FUNCTION__ << "| skip NPU probe: NPU is busy";
+                    return false;
+                }
                 const std::lock_guard session_lock(probe_session_mutex);
                 if (npu_probe_session == nullptr) {
                     // Keep the probe session alive: destroying an NPU ORT

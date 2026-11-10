@@ -22,7 +22,7 @@ MAA は Intel OpenVINO をオプションの推論バックエンドとしてサ
 メインのリリースには OpenVINO ランタイムが含まれません。別途アクセラレーションパックが必要です：
 
 1. MaaDeps を OpenVINO 機能付き（`--openvino`）でビルド
-2. `openvino-pack/package.sh` でパッケージ化し、`install.ps1` でインストールまたはロールバック
+2. MaaDeps リポジトリの `openvino-pack/package.sh` でパッケージ化し、`install.ps1` でインストールまたはロールバックします（これらのスクリプトは MAA 本体リポジトリには含まれません）
 
 パックには OpenVINO 実行プロバイダー付き ONNX Runtime、OpenVINO CPU/NPU ランタイム、ネイティブ OCR を有効にした MaaCore が含まれます。
 
