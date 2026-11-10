@@ -43,7 +43,7 @@ public:
     // True while sessions are configured to run on the OpenVINO NPU. Callers
     // use this to take the shared NPU inference lock around Ort::Session::Run.
     static bool npu_inference_enabled() noexcept;
-    static std::unique_lock<std::mutex> acquire_npu_inference_lock();
+    static std::unique_lock<std::timed_mutex> acquire_npu_inference_lock();
 
 private:
     // 以下内部函数均要求调用方已持有 m_mutex

@@ -203,6 +203,13 @@ public class PerformanceUserControlModel : PropertyChangedBase
     {
         NotifyOfPropertyChange(nameof(OpenVinoCpuAvailable));
         NotifyOfPropertyChange(nameof(OpenVinoNpuAvailable));
+
+        // 探针完成时修正不可用的 NPU 选择，避免启动时被回退为 Auto。
+        if (AsstProxy.OpenVinoProbed && !OpenVinoNpuAvailable && OpenVinoCpuAvailable &&
+            ActiveBackend is InferenceBackend.OpenVINONpu or InferenceBackend.OpenVINOHybrid)
+        {
+            SetBackendWithoutRestart(InferenceBackend.OpenVINOCpu);
+        }
     }
 
     /// <summary>

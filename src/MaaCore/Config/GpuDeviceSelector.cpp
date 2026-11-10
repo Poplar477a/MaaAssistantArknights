@@ -11,9 +11,9 @@
 
 #endif
 
-std::mutex& asst::openvino_npu_mutex()
+std::timed_mutex& asst::openvino_npu_mutex()
 {
-    static std::mutex mutex;
+    static std::timed_mutex mutex;
     return mutex;
 }
 

@@ -191,10 +191,14 @@ Ort::Session& asst::OnnxSessions::get_or_create(const std::string& name)
     }
 
     LogInfo << __FUNCTION__ << "lazy load" << name;
-    // NPU 会话编译与原生 OCR 共用插件，必须与 OCR 串行。
-    std::unique_lock<std::mutex> npu_guard;
-    if (m_npu_inference_enabled.load(std::memory_order_relaxed)) {
-        npu_guard = std::unique_lock<std::mutex>(openvino_npu_mutex());
+    // NPU 会话编译与原生 OCR 共用插件，必须与 OCR 串行。首次创建时
+    // m_npu_inference_enabled 尚未置位，需要直接看当前 selector。
+    const bool npu_selector = gpu_enabled && m_gpu_selector &&
+                              m_gpu_selector->backend() == InferenceBackend::OpenVINO &&
+                              m_gpu_selector->openvino_device() == OpenVINODevice::NPU;
+    std::unique_lock<std::timed_mutex> npu_guard;
+    if (npu_selector || m_npu_inference_enabled.load(std::memory_order_relaxed)) {
+        npu_guard = std::unique_lock<std::timed_mutex>(openvino_npu_mutex());
     }
     try {
         m_sessions.emplace(name, std::make_shared<Ort::Session>(m_env, m_model_paths.at(name).c_str(), m_options));
@@ -426,7 +430,10 @@ bool asst::OnnxSessions::initialize_gpu_options()
             try {
                 m_options.AppendExecutionProvider_OpenVINO_V2(ep_options);
                 provider_configured = true;
-                m_npu_inference_enabled.store(npu, std::memory_order_relaxed);
+                if (npu) {
+                    // 只置不清：已放弃的 NPU 会话可能仍被调用方持有。
+                    m_npu_inference_enabled.store(true, std::memory_order_relaxed);
+                }
                 LogInfo << "OpenVINO execution provider enabled on" << ep_options.at("device_type");
             }
             catch (const Ort::Exception& ex) {
@@ -511,19 +518,6 @@ static void run_probe_session(Ort::Session& session)
 
 bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
 {
-    std::vector<std::string> all_providers;
-    try {
-        all_providers = Ort::GetAvailableProviders();
-    }
-    catch (const std::exception& e) {
-        LogWarn << __FUNCTION__ << "| failed to enumerate execution providers:" << e.what();
-        return false;
-    }
-    if (std::ranges::find(all_providers, "OpenVINOExecutionProvider") == all_providers.end()) {
-        LogInfo << __FUNCTION__ << "| OpenVINO execution provider unavailable";
-        return false;
-    }
-
     // SessionOptions needs a registered default logger; the singleton's Env is
     // not reachable from this static query, so keep one probe-only Env alive.
     static Ort::Env probe_env(ORT_LOGGING_LEVEL_WARNING, "openvino-probe");
@@ -534,36 +528,42 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
 
     using namespace asst::utils::path_literals;
     const auto model_path = UserDir.get() / "resource"_p / "onnx"_p / "deploy_direction_cls.onnx"_p;
-    if (!std::filesystem::exists(model_path)) {
-        // The resource may live elsewhere (or not be installed yet). Don't turn
-        // that into "device unavailable"; fall back to the EP registration check.
-        LogWarn << __FUNCTION__ << "| probe model is missing:" << model_path << "EP registration only";
-        LogInfo << __FUNCTION__ << "| OpenVINO" << (npu ? "NPU" : "CPU") << "available (registration only)";
-        return true;
-    }
 
-    try {
-        Ort::SessionOptions options;
-        std::unordered_map<std::string, std::string> ep_options {
-            { "device_type", npu ? "NPU" : "CPU" },
-        };
-        if (npu) {
-            ep_options.emplace("disable_dynamic_shapes", "true");
-        }
-        options.AppendExecutionProvider_OpenVINO_V2(ep_options);
+    // Provider enumeration and EP registration can also block on a stalled
+    // driver, so run all of the potentially blocking probe work in the timed
+    // worker instead of only the session creation/inference.
+    auto future = std::async(std::launch::async, [npu, model_path]() -> bool {
+        try {
+            const std::vector<std::string> all_providers = Ort::GetAvailableProviders();
+            if (std::ranges::find(all_providers, "OpenVINOExecutionProvider") == all_providers.end()) {
+                LogInfo << __FUNCTION__ << "| OpenVINO execution provider unavailable";
+                return false;
+            }
 
-        // The EP may register successfully while the device plugin still fails
-        // on the first real session. Compile and run one small model so the GUI
-        // does not offer a device that will fall back to CPU. Run it on a
-        // worker with a timeout: a hung NPU driver must not block startup.
-        auto future = std::async(std::launch::async, [npu, model_path, options = std::move(options)]() mutable -> bool {
+            if (!std::filesystem::exists(model_path)) {
+                // The resource may live elsewhere (or not be installed yet). Don't
+                // turn that into "device unavailable"; fall back to registration.
+                LogWarn << __FUNCTION__ << "| probe model is missing:" << model_path << "EP registration only";
+                return true;
+            }
+
+            Ort::SessionOptions options;
+            std::unordered_map<std::string, std::string> ep_options {
+                { "device_type", npu ? "NPU" : "CPU" },
+            };
+            if (npu) {
+                ep_options.emplace("disable_dynamic_shapes", "true");
+            }
+            options.AppendExecutionProvider_OpenVINO_V2(ep_options);
+
             if (npu) {
                 // Do not probe while NPU inference or OCR is active: take the
                 // shared lock opportunistically instead of racing the plugin.
                 std::unique_lock npu_lock(openvino_npu_mutex(), std::try_to_lock);
                 if (!npu_lock.owns_lock()) {
-                    LogInfo << __FUNCTION__ << "| skip NPU probe: NPU is busy";
-                    return false;
+                    // NPU 正在被使用，视为可用，避免误标不可用。
+                    LogInfo << __FUNCTION__ << "| NPU busy, assuming available";
+                    return true;
                 }
                 const std::lock_guard session_lock(probe_session_mutex);
                 if (npu_probe_session == nullptr) {
@@ -581,25 +581,25 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
             // through the OpenVINO EP is the strongest check available here;
             // the native OCR path logs the real EXECUTION_DEVICES.
             return true;
-        });
-
-        if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
-            // Leak the future so its destructor does not block on a stuck probe.
-            (void)new std::future<bool>(std::move(future));
-            LogWarn << __FUNCTION__ << "| OpenVINO" << (npu ? "NPU" : "CPU") << "probe timed out";
+        }
+        catch (const std::exception& e) {
+            LogWarn << __FUNCTION__ << "| OpenVINO" << (npu ? "NPU" : "CPU") << "unavailable:" << e.what();
             return false;
         }
-        if (!future.get()) {
-            return false;
-        }
+    });
 
-        LogInfo << __FUNCTION__ << "| OpenVINO" << (npu ? "NPU" : "CPU") << "available";
-        return true;
-    }
-    catch (const std::exception& e) {
-        LogWarn << __FUNCTION__ << "| OpenVINO" << (npu ? "NPU" : "CPU") << "unavailable:" << e.what();
+    if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+        // Leak the future so its destructor does not block on a stuck probe.
+        (void)new std::future<bool>(std::move(future));
+        LogWarn << __FUNCTION__ << "| OpenVINO" << (npu ? "NPU" : "CPU") << "probe timed out";
         return false;
     }
+    if (!future.get()) {
+        return false;
+    }
+
+    LogInfo << __FUNCTION__ << "| OpenVINO" << (npu ? "NPU" : "CPU") << "available";
+    return true;
 }
 
 bool asst::OnnxSessions::npu_inference_enabled() noexcept
@@ -607,12 +607,17 @@ bool asst::OnnxSessions::npu_inference_enabled() noexcept
     return get_instance().m_npu_inference_enabled.load(std::memory_order_relaxed);
 }
 
-std::unique_lock<std::mutex> asst::OnnxSessions::acquire_npu_inference_lock()
+std::unique_lock<std::timed_mutex> asst::OnnxSessions::acquire_npu_inference_lock()
 {
     if (!npu_inference_enabled()) {
         return {};
     }
-    return std::unique_lock<std::mutex>(openvino_npu_mutex());
+    std::unique_lock<std::timed_mutex> lock(openvino_npu_mutex(), std::defer_lock);
+    if (!lock.try_lock_for(std::chrono::seconds(30))) {
+        LogWarn << __FUNCTION__ << "| NPU lock timeout, continuing without serialization";
+        return {};
+    }
+    return lock;
 }
 
 asst::OnnxSessions::~OnnxSessions()

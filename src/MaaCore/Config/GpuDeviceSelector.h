@@ -11,7 +11,7 @@ namespace asst
 {
 // Serializes all inference that can reach an Intel NPU: the OpenVINO NPU
 // plugin is not safe when native OCR and ORT sessions issue requests together.
-std::mutex& openvino_npu_mutex();
+std::timed_mutex& openvino_npu_mutex();
 
 enum class InferenceBackend
 {

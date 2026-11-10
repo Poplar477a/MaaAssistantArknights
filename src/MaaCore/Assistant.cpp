@@ -89,18 +89,20 @@ void best_effort(Function&& function) noexcept
 
 bool ::AsstExtAPI::set_static_option(StaticOptionKey key, const std::string& value)
 {
-    Log.info(__FUNCTION__, "| key", static_cast<int>(key), "value", value);
+    LogInfo << __FUNCTION__ << "| key" << static_cast<int>(key) << "value" << value;
+
+    // 串行化完整的后端切换，避免 ONNX 与两个 OCR 实例停留在不同后端。
+    static std::mutex backend_switch_mutex;
 
     switch (key) {
     case StaticOptionKey::CpuOCR: {
+        const std::lock_guard backend_lock(backend_switch_mutex);
         WordOcr::get_instance().use_cpu();
         CharOcr::get_instance().use_cpu();
         OnnxSessions::get_instance().use_cpu();
         return true;
     } break;
     case StaticOptionKey::GpuOCR: {
-        // 串行化完整的后端切换，避免 ONNX 与两个 OCR 实例停留在不同后端。
-        static std::mutex backend_switch_mutex;
         const std::lock_guard backend_lock(backend_switch_mutex);
         const auto selector = GpuDeviceSelector::parse(value);
         if (!selector) {
