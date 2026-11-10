@@ -114,6 +114,13 @@
                                 </MultiDataTrigger.Conditions>
                                 <Setter Property="IsEnabled" Value="False" />
                             </MultiDataTrigger>
+                            <MultiDataTrigger>
+                                <MultiDataTrigger.Conditions>
+                                    <Condition Binding="{Binding Value}" Value="{x:Static enums:OpenVinoDeviceChoice.Hybrid}" />
+                                    <Condition Binding="{Binding DataContext.OpenVinoCpuAvailable, RelativeSource={RelativeSource AncestorType=hc:ComboBox}}" Value="False" />
+                                </MultiDataTrigger.Conditions>
+                                <Setter Property="IsEnabled" Value="False" />
+                            </MultiDataTrigger>
                         </Style.Triggers>
                     </Style>
                 </hc:ComboBox.ItemContainerStyle>
