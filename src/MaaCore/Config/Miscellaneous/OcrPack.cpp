@@ -415,10 +415,13 @@ bool OcrPack::load(const std::filesystem::path& path)
     else {
         const auto fallback_det_file = path.parent_path() / "PaddleOCR" / "det" / "inference.onnx"_p;
         if (std::filesystem::exists(fallback_det_file)) {
-            m_impl->det_model_path = fallback_det_file;
-            m_impl->det_stamp = file_stamp(fallback_det_file);
-            m_impl->det = nullptr;
-            models_changed = true;
+            const auto stamp = file_stamp(fallback_det_file);
+            if (m_impl->det_model_path != fallback_det_file || m_impl->det_stamp != stamp) {
+                m_impl->det_model_path = fallback_det_file;
+                m_impl->det_stamp = stamp;
+                m_impl->det = nullptr;
+                models_changed = true;
+            }
         }
         else if (!m_impl->det_model_path.empty()) {
             // 新资源不含检测模型且无回退：清除旧路径，避免继续使用上一次资源的模型。

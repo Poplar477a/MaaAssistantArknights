@@ -546,10 +546,21 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
             }
 
             if (!std::filesystem::exists(model_path)) {
-                // The resource may live elsewhere (or not be installed yet). Don't
-                // turn that into "device unavailable"; fall back to registration.
-                LogWarn << __FUNCTION__ << "| probe model is missing:" << model_path << "EP registration only";
-                return true;
+                // 没有模型无法验证设备真实可用；仅凭 EP 注册成功不算通过。
+                LogWarn << __FUNCTION__ << "| probe model is missing:" << model_path << "device unverified";
+                return false;
+            }
+
+            std::unique_lock<std::timed_mutex> npu_lock;
+            if (npu) {
+                // EP 注册同样可能进入 NPU 插件，必须先与推理/OCR 串行。
+                // 正在使用 NPU 时跳过探针，避免与在途工作竞争插件。
+                npu_lock = std::unique_lock<std::timed_mutex>(openvino_npu_mutex(), std::try_to_lock);
+                if (!npu_lock.owns_lock()) {
+                    // NPU 正在被使用，视为可用，避免误标不可用。
+                    LogInfo << __FUNCTION__ << "| NPU busy, assuming available";
+                    return true;
+                }
             }
 
             Ort::SessionOptions options;
@@ -562,14 +573,6 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
             options.AppendExecutionProvider_OpenVINO_V2(ep_options);
 
             if (npu) {
-                // Do not probe while NPU inference or OCR is active: take the
-                // shared lock opportunistically instead of racing the plugin.
-                std::unique_lock npu_lock(openvino_npu_mutex(), std::try_to_lock);
-                if (!npu_lock.owns_lock()) {
-                    // NPU 正在被使用，视为可用，避免误标不可用。
-                    LogInfo << __FUNCTION__ << "| NPU busy, assuming available";
-                    return true;
-                }
                 const std::lock_guard session_lock(probe_session_mutex);
                 if (npu_probe_session == nullptr) {
                     // Keep the probe session alive: destroying an NPU ORT
@@ -617,9 +620,13 @@ std::unique_lock<std::timed_mutex> asst::OnnxSessions::acquire_npu_inference_loc
     if (!npu_inference_enabled()) {
         return {};
     }
-    // 必须真正持有锁才允许推理；等待而不是超时后无锁运行，避免与 OCR/NPU
-    // 插件并发。驱动卡死的场景由探针的超时与重启策略兜底。
-    return std::unique_lock<std::timed_mutex>(openvino_npu_mutex());
+    // 探针的限时 worker 可能卡在驱动里并长时间持有锁；有界等待后退化为无锁运行，
+    // 避免整条推理流水线被一次驱动卡死永久阻塞。
+    std::unique_lock<std::timed_mutex> lock(openvino_npu_mutex(), std::defer_lock);
+    if (!lock.try_lock_for(std::chrono::seconds(60))) {
+        LogError << __FUNCTION__ << "| timed out waiting for NPU lock; continuing without serialization";
+    }
+    return lock;
 }
 
 asst::OnnxSessions::~OnnxSessions()
