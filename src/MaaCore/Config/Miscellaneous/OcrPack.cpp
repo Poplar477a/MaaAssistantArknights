@@ -412,12 +412,20 @@ bool OcrPack::load(const std::filesystem::path& path)
             models_changed = true;
         }
     }
-    else if (m_impl->det_model_path.empty()) {
+    else {
         const auto fallback_det_file = path.parent_path() / "PaddleOCR" / "det" / "inference.onnx"_p;
         if (std::filesystem::exists(fallback_det_file)) {
             m_impl->det_model_path = fallback_det_file;
             m_impl->det_stamp = file_stamp(fallback_det_file);
             m_impl->det = nullptr;
+            models_changed = true;
+        }
+        else if (!m_impl->det_model_path.empty()) {
+            // 新资源不含检测模型且无回退：清除旧路径，避免继续使用上一次资源的模型。
+            m_impl->det_model_path.clear();
+            m_impl->det_stamp = {};
+            m_impl->det = nullptr;
+            m_impl->ocr = nullptr;
             models_changed = true;
         }
     }
@@ -435,6 +443,13 @@ bool OcrPack::load(const std::filesystem::path& path)
             models_changed = true;
         }
     }
+    else if (!m_impl->rec_model_path.empty()) {
+        m_impl->rec_model_path.clear();
+        m_impl->rec_stamp = {};
+        m_impl->rec = nullptr;
+        m_impl->ocr = nullptr;
+        models_changed = true;
+    }
     if (std::filesystem::exists(rec_label_file)) {
         const auto stamp = file_stamp(rec_label_file);
         if (m_impl->rec_label_path != rec_label_file || m_impl->label_stamp != stamp) {
@@ -443,6 +458,13 @@ bool OcrPack::load(const std::filesystem::path& path)
             m_impl->rec = nullptr;
             models_changed = true;
         }
+    }
+    else if (!m_impl->rec_label_path.empty()) {
+        m_impl->rec_label_path.clear();
+        m_impl->label_stamp = {};
+        m_impl->rec = nullptr;
+        m_impl->ocr = nullptr;
+        models_changed = true;
     }
 
 #ifdef MAA_WITH_OPENVINO

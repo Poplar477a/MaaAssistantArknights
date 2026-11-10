@@ -215,7 +215,12 @@ Ort::Session& asst::OnnxSessions::get_or_create(const std::string& name)
         m_gpu_selector = std::nullopt;
         gpu_enabled = false;
         gpu_options_initialized = false;
-        // 不清除 NPU 标志：已放弃的 NPU 会话可能仍被调用方持有并在运行。
+        // 与 warmup 回退保持一致：放弃全部已缓存会话，避免部分会话留在加速器上。
+        // 不销毁：持有引用的调用方可能仍在运行。不清除 NPU 标志原因相同。
+        for (auto iter = m_sessions.begin(); iter != m_sessions.end();) {
+            onnx_session_detail::abandon_ort_session(iter->first, std::move(iter->second));
+            iter = m_sessions.erase(iter);
+        }
         m_sessions.emplace(name, std::make_shared<Ort::Session>(m_env, m_model_paths.at(name).c_str(), m_options));
     }
 

@@ -767,22 +767,30 @@ public class AsstProxy
         if (backend is InferenceBackend.OpenVINOCpu or InferenceBackend.OpenVINONpu or InferenceBackend.OpenVINOHybrid)
         {
             // Hybrid 同时需要 OpenVINO CPU（OCR）与 NPU（ONNX）。
-            var available = backend switch
+            // 首选后端不可用时回退到仍可用的 OpenVINO 模式，而不是直接丢弃加速。
+            var fallback = backend switch
             {
-                InferenceBackend.OpenVINOCpu => OpenVinoCpuAvailable,
-                InferenceBackend.OpenVINOHybrid => OpenVinoCpuAvailable && OpenVinoNpuAvailable,
-                _ => OpenVinoNpuAvailable,
+                InferenceBackend.OpenVINOCpu when !OpenVinoCpuAvailable =>
+                    OpenVinoNpuAvailable ? InferenceBackend.OpenVINONpu : InferenceBackend.Auto,
+                InferenceBackend.OpenVINONpu when !OpenVinoNpuAvailable =>
+                    OpenVinoCpuAvailable ? InferenceBackend.OpenVINOCpu : InferenceBackend.Auto,
+                InferenceBackend.OpenVINOHybrid when !(OpenVinoCpuAvailable && OpenVinoNpuAvailable) =>
+                    OpenVinoNpuAvailable ? InferenceBackend.OpenVINONpu
+                    : OpenVinoCpuAvailable ? InferenceBackend.OpenVINOCpu
+                    : InferenceBackend.Auto,
+                _ => backend,
             };
-            if (!available)
+            if (fallback != backend)
             {
                 var warning = LocalizationHelper.GetString("InferenceBackend.Unavailable.Warning");
                 _logger.Warning(
-                    "Saved OpenVINO backend {Backend} is unavailable; falling back to Auto. {Warning}",
+                    "Saved OpenVINO backend {Backend} is unavailable; falling back to {Fallback}. {Warning}",
                     backend,
+                    fallback,
                     warning);
                 Instances.TaskQueueViewModel.AddLog(warning, UiLogColor.Warning);
-                SettingsViewModel.PerformanceSettings.SetBackendWithoutRestart(InferenceBackend.Auto);
-                backend = InferenceBackend.Auto;
+                SettingsViewModel.PerformanceSettings.SetBackendWithoutRestart(fallback);
+                backend = fallback;
             }
         }
 
