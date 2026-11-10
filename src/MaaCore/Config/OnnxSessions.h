@@ -49,6 +49,8 @@ private:
     // 以下内部函数均要求调用方已持有 m_mutex
     Ort::Session& get_or_create(const std::string& name);
     void warmup_locked(const std::string& name);
+    // OpenVINO NPU 会话析构可能崩溃，需要泄漏保活；CPU 及其它后端直接释放。
+    void retire_session_locked(const std::string& name, std::shared_ptr<Ort::Session> session);
     bool use_cpu_locked();
     bool use_gpu_locked(GpuDeviceSelector selector);
 
@@ -63,6 +65,7 @@ private:
     std::unordered_map<std::string, std::filesystem::path> m_model_paths;
     std::unordered_map<std::string, std::size_t> m_session_users;
     std::unordered_set<std::string> m_pending_reload; // 持有期间路径变化、待归零后销毁的会话
+    std::unordered_set<std::string> m_npu_sessions; // 创建于 OpenVINO NPU 的会话名
     std::optional<GpuDeviceSelector> m_gpu_selector;
     std::mutex m_mutex;
     bool gpu_enabled = false;

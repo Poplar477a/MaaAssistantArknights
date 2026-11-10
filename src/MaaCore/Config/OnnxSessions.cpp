@@ -5,6 +5,7 @@
 #include <chrono>
 #include <filesystem>
 #include <future>
+#include <stdexcept>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -45,6 +46,14 @@ void abandon_ort_session(std::string name, std::shared_ptr<Ort::Session> session
 }
 }
 
+void asst::OnnxSessions::retire_session_locked(const std::string& name, std::shared_ptr<Ort::Session> session)
+{
+    if (m_npu_sessions.erase(name) > 0) {
+        // 只有 OpenVINO NPU 会话需要泄漏保活。
+        onnx_session_detail::abandon_ort_session(name, std::move(session));
+    }
+}
+
 bool asst::OnnxSessions::load(const std::filesystem::path& path)
 {
     LogTraceFunction;
@@ -59,9 +68,7 @@ bool asst::OnnxSessions::load(const std::filesystem::path& path)
             m_pending_reload.insert(name);
         }
         else if (auto session = m_sessions.find(name); session != m_sessions.end()) {
-            // Callers may still hold the reference returned by get(); keep the
-            // object alive instead of destroying it with the cache entry.
-            onnx_session_detail::abandon_ort_session(session->first, std::move(session->second));
+            retire_session_locked(session->first, std::move(session->second));
             m_sessions.erase(session);
         }
     }
@@ -128,17 +135,17 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
     const bool leak_npu_sessions = m_npu_inference_enabled.load(std::memory_order_relaxed);
     if (leak_npu_sessions) {
         // Callers using get() hold raw session references without registering
-        // in m_session_users. Leak all cached sessions so those references stay
-        // valid while the cache is rebuilt on CPU.
+        // in m_session_users. NPU sessions are leaked so those references stay
+        // valid while the cache is rebuilt on CPU; other backends are released.
         for (auto& [session_name, session] : m_sessions) {
-            onnx_session_detail::abandon_ort_session(session_name, std::move(session));
+            retire_session_locked(session_name, std::move(session));
         }
         m_sessions.clear();
         m_pending_reload.clear();
     }
     else {
         if (auto iter = m_sessions.find(name); iter != m_sessions.end()) {
-            onnx_session_detail::abandon_ort_session(iter->first, std::move(iter->second));
+            retire_session_locked(iter->first, std::move(iter->second));
             m_sessions.erase(iter);
         }
         for (auto iter = m_sessions.begin(); iter != m_sessions.end();) {
@@ -147,7 +154,7 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
                 ++iter;
             }
             else {
-                onnx_session_detail::abandon_ort_session(iter->first, std::move(iter->second));
+                retire_session_locked(iter->first, std::move(iter->second));
                 iter = m_sessions.erase(iter);
             }
         }
@@ -169,7 +176,7 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
     catch (const Ort::Exception& ex) {
         LogError << __FUNCTION__ << "Failed to recreate" << name << "on CPU:" << ex.what();
         if (auto iter = m_sessions.find(name); iter != m_sessions.end()) {
-            onnx_session_detail::abandon_ort_session(iter->first, std::move(iter->second));
+            retire_session_locked(iter->first, std::move(iter->second));
             m_sessions.erase(iter);
         }
         throw;
@@ -202,6 +209,9 @@ Ort::Session& asst::OnnxSessions::get_or_create(const std::string& name)
     }
     try {
         m_sessions.emplace(name, std::make_shared<Ort::Session>(m_env, m_model_paths.at(name).c_str(), m_options));
+        if (npu_selector) {
+            m_npu_sessions.insert(name);
+        }
     }
     catch (const Ort::Exception& ex) {
         // GPU 后端的初始化错误（例如 WebGPU EP）可能到建 session 时才暴露，退回 CPU 重试一次
@@ -215,10 +225,10 @@ Ort::Session& asst::OnnxSessions::get_or_create(const std::string& name)
         m_gpu_selector = std::nullopt;
         gpu_enabled = false;
         gpu_options_initialized = false;
-        // 与 warmup 回退保持一致：放弃全部已缓存会话，避免部分会话留在加速器上。
-        // 不销毁：持有引用的调用方可能仍在运行。不清除 NPU 标志原因相同。
+        // 与 warmup 回退保持一致：清空全部已缓存会话，避免部分会话留在加速器上。
+        // NPU 会话泄漏保活（在途引用），其它后端直接释放。
         for (auto iter = m_sessions.begin(); iter != m_sessions.end();) {
-            onnx_session_detail::abandon_ort_session(iter->first, std::move(iter->second));
+            retire_session_locked(iter->first, std::move(iter->second));
             iter = m_sessions.erase(iter);
         }
         m_sessions.emplace(name, std::make_shared<Ort::Session>(m_env, m_model_paths.at(name).c_str(), m_options));
@@ -255,7 +265,7 @@ void asst::OnnxSessions::release(const std::string& name)
             // 持有期间模型路径变化过，最后一个引用释放后放弃旧会话，下次 acquire 按新路径重建。
             // 不销毁：其他调用方可能仍持有 get() 返回的引用。
             if (auto iter = m_sessions.find(name); iter != m_sessions.end()) {
-                onnx_session_detail::abandon_ort_session(iter->first, std::move(iter->second));
+                retire_session_locked(iter->first, std::move(iter->second));
                 m_sessions.erase(iter);
             }
             LogInfo << __FUNCTION__ << "stale session destroyed after last release" << name;
@@ -532,22 +542,28 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
     const bool npu = device == OpenVINODevice::NPU;
 
     using namespace asst::utils::path_literals;
-    const auto model_path = UserDir.get() / "resource"_p / "onnx"_p / "deploy_direction_cls.onnx"_p;
+    std::filesystem::path model_path;
+    bool resources_loaded = false;
+    {
+        auto& instance = get_instance();
+        const std::lock_guard lock(instance.m_mutex);
+        resources_loaded = !instance.m_model_paths.empty();
+        if (auto iter = instance.m_model_paths.find("deploy_direction_cls"); iter != instance.m_model_paths.end()) {
+            model_path = iter->second;
+        }
+    }
+    if (model_path.empty()) {
+        model_path = UserDir.get() / "resource"_p / "onnx"_p / "deploy_direction_cls.onnx"_p;
+    }
 
     // Provider enumeration and EP registration can also block on a stalled
     // driver, so run all of the potentially blocking probe work in the timed
     // worker instead of only the session creation/inference.
-    auto future = std::async(std::launch::async, [npu, model_path]() -> bool {
+    auto future = std::async(std::launch::async, [npu, model_path, resources_loaded]() -> bool {
         try {
             const std::vector<std::string> all_providers = Ort::GetAvailableProviders();
             if (std::ranges::find(all_providers, "OpenVINOExecutionProvider") == all_providers.end()) {
                 LogInfo << __FUNCTION__ << "| OpenVINO execution provider unavailable";
-                return false;
-            }
-
-            if (!std::filesystem::exists(model_path)) {
-                // 没有模型无法验证设备真实可用；仅凭 EP 注册成功不算通过。
-                LogWarn << __FUNCTION__ << "| probe model is missing:" << model_path << "device unverified";
                 return false;
             }
 
@@ -571,6 +587,18 @@ bool asst::OnnxSessions::probe_openvino(OpenVINODevice device)
                 ep_options.emplace("disable_dynamic_shapes", "true");
             }
             options.AppendExecutionProvider_OpenVINO_V2(ep_options);
+
+            if (!std::filesystem::exists(model_path)) {
+                if (resources_loaded) {
+                    // 资源已加载但缺少探针模型：无法验证设备，按不可用处理。
+                    LogWarn << __FUNCTION__ << "| probe model missing from loaded resources:" << model_path;
+                    return false;
+                }
+                // 资源尚未加载（启动早期）：此时无法建会话验证，保留用户选择比
+                // 误判不可用更安全；EP 注册已完成。
+                LogWarn << __FUNCTION__ << "| probe model not installed yet; EP registration only";
+                return true;
+            }
 
             if (npu) {
                 const std::lock_guard session_lock(probe_session_mutex);
@@ -620,11 +648,12 @@ std::unique_lock<std::timed_mutex> asst::OnnxSessions::acquire_npu_inference_loc
     if (!npu_inference_enabled()) {
         return {};
     }
-    // 探针的限时 worker 可能卡在驱动里并长时间持有锁；有界等待后退化为无锁运行，
-    // 避免整条推理流水线被一次驱动卡死永久阻塞。
+    // 探针的限时 worker 可能卡在驱动里并长时间持有锁。有界等待后中止本次推理，
+    // 由调用方回退/报错；不能无锁运行，否则会与在途 NPU 工作并发访问插件。
     std::unique_lock<std::timed_mutex> lock(openvino_npu_mutex(), std::defer_lock);
     if (!lock.try_lock_for(std::chrono::seconds(60))) {
-        LogError << __FUNCTION__ << "| timed out waiting for NPU lock; continuing without serialization";
+        LogError << __FUNCTION__ << "| timed out waiting for NPU lock";
+        throw std::runtime_error("timed out waiting for OpenVINO NPU lock");
     }
     return lock;
 }

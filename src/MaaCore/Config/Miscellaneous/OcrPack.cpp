@@ -5,8 +5,11 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <exception>
 #include <filesystem>
+#include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 
@@ -47,6 +50,24 @@ namespace asst
 {
 
 #ifdef MAA_WITH_OPENVINO
+namespace
+{
+// 探针/ONNX 可能在驱动卡死时长期持有 NPU 锁；有界等待后中止本次 OCR 调用，
+// 由上层回退到 CPU，避免识别线程被永久阻塞。
+std::unique_lock<std::timed_mutex> acquire_ocr_npu_lock(std::string_view device)
+{
+    std::unique_lock<std::timed_mutex> lock;
+    if (device.starts_with("NPU")) {
+        lock = std::unique_lock<std::timed_mutex>(openvino_npu_mutex(), std::defer_lock);
+        if (!lock.try_lock_for(std::chrono::seconds(60))) {
+            LogError << __FUNCTION__ << "| timed out waiting for OpenVINO NPU lock";
+            throw std::runtime_error("timed out waiting for OpenVINO NPU lock");
+        }
+    }
+    return lock;
+}
+}
+
 namespace ocr_ov
 {
 // One OpenVINO Core per process: separate Core instances load the same device
@@ -408,7 +429,6 @@ bool OcrPack::load(const std::filesystem::path& path)
         if (m_impl->det_model_path != det_model_file || m_impl->det_stamp != stamp) {
             m_impl->det_model_path = det_model_file;
             m_impl->det_stamp = stamp;
-            m_impl->det = nullptr;
             models_changed = true;
         }
     }
@@ -419,7 +439,6 @@ bool OcrPack::load(const std::filesystem::path& path)
             if (m_impl->det_model_path != fallback_det_file || m_impl->det_stamp != stamp) {
                 m_impl->det_model_path = fallback_det_file;
                 m_impl->det_stamp = stamp;
-                m_impl->det = nullptr;
                 models_changed = true;
             }
         }
@@ -427,8 +446,6 @@ bool OcrPack::load(const std::filesystem::path& path)
             // 新资源不含检测模型且无回退：清除旧路径，避免继续使用上一次资源的模型。
             m_impl->det_model_path.clear();
             m_impl->det_stamp = {};
-            m_impl->det = nullptr;
-            m_impl->ocr = nullptr;
             models_changed = true;
         }
     }
@@ -442,15 +459,12 @@ bool OcrPack::load(const std::filesystem::path& path)
         if (m_impl->rec_model_path != rec_model_file || m_impl->rec_stamp != stamp) {
             m_impl->rec_model_path = rec_model_file;
             m_impl->rec_stamp = stamp;
-            m_impl->rec = nullptr;
             models_changed = true;
         }
     }
     else if (!m_impl->rec_model_path.empty()) {
         m_impl->rec_model_path.clear();
         m_impl->rec_stamp = {};
-        m_impl->rec = nullptr;
-        m_impl->ocr = nullptr;
         models_changed = true;
     }
     if (std::filesystem::exists(rec_label_file)) {
@@ -458,16 +472,27 @@ bool OcrPack::load(const std::filesystem::path& path)
         if (m_impl->rec_label_path != rec_label_file || m_impl->label_stamp != stamp) {
             m_impl->rec_label_path = rec_label_file;
             m_impl->label_stamp = stamp;
-            m_impl->rec = nullptr;
             models_changed = true;
         }
     }
     else if (!m_impl->rec_label_path.empty()) {
         m_impl->rec_label_path.clear();
         m_impl->label_stamp = {};
-        m_impl->rec = nullptr;
-        m_impl->ocr = nullptr;
         models_changed = true;
+    }
+
+    if (models_changed) {
+        // 与 release_models 一致：GPU 生效时泄漏旧对象，避免在途推理析构时崩溃。
+        if (m_gpu_active) {
+            (void)m_impl->det.release();
+            (void)m_impl->rec.release();
+            (void)m_impl->ocr.release();
+        }
+        else {
+            m_impl->det.reset();
+            m_impl->rec.reset();
+            m_impl->ocr.reset();
+        }
     }
 
 #ifdef MAA_WITH_OPENVINO
@@ -938,10 +963,7 @@ bool OcrPack::create_openvino_pipeline()
     // this point; a driver that stalls only on a specific model remains a
     // documented limitation.
     const auto compile_all = [this](const std::string& device) {
-        std::unique_lock<std::timed_mutex> npu_lock;
-        if (device.starts_with("NPU")) {
-            npu_lock = std::unique_lock<std::timed_mutex>(openvino_npu_mutex());
-        }
+        const auto npu_lock = acquire_ocr_npu_lock(device);
         const ov::Shape det_shape { 1, 3, ocr_ov::DetHeight, ocr_ov::DetWidth };
         auto det_model = ocr_ov::read_static_model(ocr_ov::shared_core(), m_impl->det_model_path, det_shape);
         m_impl->ov_det_model = ocr_ov::shared_core().compile_model(det_model, device, m_impl->ov_props);
@@ -962,10 +984,7 @@ bool OcrPack::create_openvino_pipeline()
     };
 
     const auto warmup = [this](const std::string& device) {
-        std::unique_lock<std::timed_mutex> npu_lock;
-        if (device.starts_with("NPU")) {
-            npu_lock = std::unique_lock<std::timed_mutex>(openvino_npu_mutex());
-        }
+        const auto npu_lock = acquire_ocr_npu_lock(device);
 
         float scale = 1.0F;
         const cv::Mat det_dummy = cv::Mat::zeros(ocr_ov::DetHeight, ocr_ov::DetWidth, CV_8UC3);
@@ -1044,10 +1063,7 @@ OcrPack::ResultsVec
             return false;
         }
         try {
-            std::unique_lock<std::timed_mutex> npu_lock;
-            if (m_impl->ov_device.starts_with("NPU")) {
-                npu_lock = std::unique_lock<std::timed_mutex>(openvino_npu_mutex());
-            }
+            const auto npu_lock = acquire_ocr_npu_lock(m_impl->ov_device);
             const ov::Shape shape { 1, 3, ocr_ov::RecHeight, static_cast<std::size_t>(width) };
             auto model = ocr_ov::read_static_model(ocr_ov::shared_core(), m_impl->rec_model_path, shape);
             auto compiled = ocr_ov::shared_core().compile_model(model, m_impl->ov_device, m_impl->ov_props);
@@ -1077,10 +1093,7 @@ OcrPack::ResultsVec
             ov::Shape { 1, 3, ocr_ov::RecHeight, static_cast<std::size_t>(bucket) },
             m_impl->ov_rec_in.data());
         {
-            std::unique_lock<std::timed_mutex> npu_lock;
-            if (m_impl->ov_device.starts_with("NPU")) {
-                npu_lock = std::unique_lock<std::timed_mutex>(openvino_npu_mutex());
-            }
+            const auto npu_lock = acquire_ocr_npu_lock(m_impl->ov_device);
             bucket_iter->second.request.set_input_tensor(input);
             bucket_iter->second.request.infer();
         }
@@ -1178,10 +1191,7 @@ OcrPack::ResultsVec
                 ov::Shape { 1, 3, ocr_ov::DetHeight, ocr_ov::DetWidth },
                 m_impl->ov_det_in.data());
             {
-                std::unique_lock<std::timed_mutex> npu_lock;
-                if (m_impl->ov_device.starts_with("NPU")) {
-                    npu_lock = std::unique_lock<std::timed_mutex>(openvino_npu_mutex());
-                }
+                const auto npu_lock = acquire_ocr_npu_lock(m_impl->ov_device);
                 m_impl->ov_det_req.set_input_tensor(det_tensor);
                 m_impl->ov_det_req.infer();
             }
