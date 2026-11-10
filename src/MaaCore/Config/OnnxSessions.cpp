@@ -41,7 +41,7 @@ void abandon_ort_session(std::string name, Ort::Session session)
 bool asst::OnnxSessions::load(const std::filesystem::path& path)
 {
     LogTraceFunction;
-    Log.info("record path", path.lexically_relative(UserDir.get()));
+    LogInfo << "record path" << path.lexically_relative(UserDir.get());
 
     std::string name = utils::path_to_utf8_string(path.stem());
     std::lock_guard lock(m_mutex);
@@ -83,7 +83,7 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
 
     const auto size = kInputSizes.find(name);
     if (size == kInputSizes.end()) {
-        Log.debug(__FUNCTION__, "| no warmup size recorded for", name);
+        LogDebug << __FUNCTION__ << "| no warmup size recorded for" << name;
         return;
     }
 
@@ -104,11 +104,11 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
 
     try {
         run(get_or_create(name));
-        Log.info(__FUNCTION__, "| warmed up", name);
+        LogInfo << __FUNCTION__ << "| warmed up" << name;
         return;
     }
     catch (const std::exception& e) {
-        Log.warn(__FUNCTION__, "| warmup failed", name, e.what());
+        LogWarn << __FUNCTION__ << "| warmup failed" << name << e.what();
     }
 
     // 建 session 成功不代表设备能跑。预热是第一次真正推理，失败时拆掉 GPU 会话再按 CPU 建一次，
@@ -152,15 +152,15 @@ void asst::OnnxSessions::warmup_locked(const std::string& name)
     try {
         const auto created = m_sessions.emplace(name, Ort::Session(m_env, m_model_paths.at(name).c_str(), m_options));
         run(created.first->second);
-        Log.info(__FUNCTION__, "| warmed up", name, "on CPU");
+        LogInfo << __FUNCTION__ << "| warmed up" << name << "on CPU";
     }
     catch (const Ort::Exception& ex) {
-        Log.error(__FUNCTION__, "Failed to recreate", name, "on CPU:", ex.what());
+        LogError << __FUNCTION__ << "Failed to recreate" << name << "on CPU:" << ex.what();
         m_sessions.erase(name);
         throw;
     }
     catch (const std::exception& e) {
-        Log.warn(__FUNCTION__, "| CPU warmup failed", name, e.what());
+        LogWarn << __FUNCTION__ << "| CPU warmup failed" << name << e.what();
     }
 }
 
@@ -171,22 +171,22 @@ Ort::Session& asst::OnnxSessions::get_or_create(const std::string& name)
     }
 
     if (gpu_enabled && !gpu_options_initialized && !initialize_gpu_options()) {
-        Log.error(__FUNCTION__, "Failed to initialize configured GPU; falling back to CPU mode");
+        LogError << __FUNCTION__ << "Failed to initialize configured GPU; falling back to CPU mode";
         use_cpu_locked();
     }
 
-    Log.info(__FUNCTION__, "lazy load", name);
+    LogInfo << __FUNCTION__ << "lazy load" << name;
     try {
         m_sessions.emplace(name, Ort::Session(m_env, m_model_paths.at(name).c_str(), m_options));
     }
     catch (const Ort::Exception& ex) {
         // GPU 后端的初始化错误（例如 WebGPU EP）可能到建 session 时才暴露，退回 CPU 重试一次
-        Log.error(__FUNCTION__, "Failed to create", name, "session:", ex.what());
+        LogError << __FUNCTION__ << "Failed to create" << name << "session:" << ex.what();
         if (!gpu_enabled) {
             throw;
         }
 
-        Log.error(__FUNCTION__, "Falling back to CPU mode");
+        LogError << __FUNCTION__ << "Falling back to CPU mode";
         reset_session_options();
         m_gpu_selector = std::nullopt;
         gpu_enabled = false;
@@ -217,7 +217,7 @@ void asst::OnnxSessions::release(const std::string& name)
     std::lock_guard lock(m_mutex);
     const auto found = m_session_users.find(name);
     if (found == m_session_users.end()) {
-        Log.error(__FUNCTION__, "session was not acquired", name);
+        LogError << __FUNCTION__ << "session was not acquired" << name;
         return;
     }
     if (--found->second == 0) {
@@ -230,12 +230,12 @@ void asst::OnnxSessions::release(const std::string& name)
                 }
                 m_sessions.erase(iter);
             }
-            Log.info(__FUNCTION__, "stale session destroyed after last release", name);
+            LogInfo << __FUNCTION__ << "stale session destroyed after last release" << name;
         }
         if (!gpu_enabled && m_sessions.empty()) {
             m_npu_inference_enabled.store(false, std::memory_order_relaxed);
         }
-        Log.info(__FUNCTION__, "released", name);
+        LogInfo << __FUNCTION__ << "released" << name;
     }
 }
 
@@ -278,7 +278,7 @@ bool asst::OnnxSessions::use_cpu_locked()
     }
 
     const auto cpu_threads = reset_session_options();
-    Log.info("CPU OCR enabled with", cpu_threads, "threads");
+    LogInfo << "CPU OCR enabled with" << cpu_threads << "threads";
 
     m_gpu_selector = std::nullopt;
     gpu_enabled = false;
@@ -302,11 +302,11 @@ bool asst::OnnxSessions::use_gpu_locked(GpuDeviceSelector selector)
             return true;
         }
 
-        Log.error(__FUNCTION__, "GPU OCR is already configured with a different device selector");
+        LogError << __FUNCTION__ << "GPU OCR is already configured with a different device selector";
         return false;
     }
     if (!m_sessions.empty()) {
-        Log.error(__FUNCTION__, "GPU OCR cannot be configured after ONNX sessions have been created");
+        LogError << __FUNCTION__ << "GPU OCR cannot be configured after ONNX sessions have been created";
         return false;
     }
 

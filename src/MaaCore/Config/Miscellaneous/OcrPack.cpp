@@ -363,7 +363,7 @@ bool OcrPack::load(const std::filesystem::path& path)
     const std::lock_guard recognize_lock(m_recognize_mutex);
 
     LogTraceFunction;
-    Log.info("load", path.lexically_relative(UserDir.get()));
+    LogInfo << "load" << path.lexically_relative(UserDir.get());
 
     bool models_changed = false;
 
@@ -436,7 +436,7 @@ OcrPack::ResultsVec OcrPack::recognize(const cv::Mat& image, bool without_det, c
     const std::lock_guard recognize_lock(m_recognize_mutex);
 
     if (!check_and_load()) {
-        Log.error(__FUNCTION__, "check_and_load failed");
+        LogError << __FUNCTION__ << "check_and_load failed";
         return {};
     }
 
@@ -506,7 +506,8 @@ OcrPack::ResultsVec OcrPack::recognize(const cv::Mat& image, bool without_det, c
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time).count();
     std::string class_type = utils::demangle(typeid(*this).name());
     if (!base_roi) {
-        Log.trace(class_type, raw_results, without_det ? "by OCR Rec" : "by OCR Pipeline", ", cost", costs, "ms");
+        LogTrace << class_type << (without_det ? "by OCR Rec" : "by OCR Pipeline") << raw_results << ", cost" << costs
+                 << "ms";
     }
     else {
         std::string output = "[";
@@ -526,7 +527,8 @@ OcrPack::ResultsVec OcrPack::recognize(const cv::Mat& image, bool without_det, c
                 raw_results[i].score);
         }
         output += "]";
-        Log.trace(class_type, output, without_det ? "by OCR Rec" : "by OCR Pipeline", ", cost", costs, "ms");
+        LogTrace << class_type << (without_det ? "by OCR Rec" : "by OCR Pipeline") << output << ", cost" << costs
+                 << "ms";
     }
     return raw_results;
 }
@@ -579,7 +581,7 @@ bool OcrPack::check_and_load()
         return false;
     }
 
-    Log.error(__FUNCTION__, "| GPU OCR init failed, falling back to CPU");
+    LogError << __FUNCTION__ << "| GPU OCR init failed, falling back to CPU";
     m_gpu_active = false;
     return create_pipeline(true);
 }
@@ -626,7 +628,7 @@ bool OcrPack::create_pipeline(bool force_cpu)
     if (!force_cpu) {
         if (backend == InferenceBackend::WebGPU) {
             if (!device_id) {
-                Log.error(__FUNCTION__, "| failed to resolve the configured WebGPU device, falling back to CPU");
+                LogError << __FUNCTION__ << "| failed to resolve the configured WebGPU device, falling back to CPU";
             }
             else if (auto webgpu_options = make_webgpu_provider_options(*m_gpu_selector); webgpu_options) {
                 m_gpu_active = true;
@@ -640,10 +642,10 @@ bool OcrPack::create_pipeline(bool force_cpu)
                 rec_option.ort_option.configure_session_callback_data = &m_impl->webgpu_options;
                 det_option.UseWebGPU(*device_id);
                 rec_option.UseWebGPU(*device_id);
-                Log.info(__FUNCTION__, "| FastDeploy WebGPU mode with device", *device_id);
+                LogInfo << __FUNCTION__ << "| FastDeploy WebGPU mode with device" << *device_id;
             }
             else {
-                Log.error(__FUNCTION__, "| failed to create the WebGPU device, falling back to CPU");
+                LogError << __FUNCTION__ << "| failed to create the WebGPU device, falling back to CPU";
             }
         }
 #ifdef _WIN32
@@ -651,18 +653,18 @@ bool OcrPack::create_pipeline(bool force_cpu)
             m_gpu_active = true;
             det_option.UseDirectML(*device_id);
             rec_option.UseDirectML(*device_id);
-            Log.info(__FUNCTION__, "| FastDeploy DirectML mode with device", *device_id);
+            LogInfo << __FUNCTION__ << "| FastDeploy DirectML mode with device" << *device_id;
         }
 #endif
         else if (backend == InferenceBackend::DirectML) {
 #ifdef _WIN32
-            Log.error(__FUNCTION__, "| failed to resolve the configured DirectML device, falling back to CPU");
+            LogError << __FUNCTION__ << "| failed to resolve the configured DirectML device, falling back to CPU";
 #else
-            Log.error(__FUNCTION__, "| DirectML backend is only available on Windows, falling back to CPU");
+            LogError << __FUNCTION__ << "| DirectML backend is only available on Windows, falling back to CPU";
 #endif
         }
         else if (m_gpu_selector && !device_id) {
-            Log.error(__FUNCTION__, "| failed to resolve the configured GPU, falling back to CPU");
+            LogError << __FUNCTION__ << "| failed to resolve the configured GPU, falling back to CPU";
         }
     }
 
@@ -677,7 +679,7 @@ bool OcrPack::create_pipeline(bool force_cpu)
         // CPU 模式下限制线程数，避免过高的 CPU 占用
         det_option.SetCpuThreadNum(cpu_threads);
         rec_option.SetCpuThreadNum(cpu_threads);
-        Log.info(__FUNCTION__, "| FastDeploy CPU mode with", cpu_threads, "threads");
+        LogInfo << __FUNCTION__ << "| FastDeploy CPU mode with" << cpu_threads << "threads";
     }
 
     try {
@@ -707,12 +709,12 @@ bool OcrPack::create_pipeline(bool force_cpu)
         }
     }
     catch (const std::exception& e) {
-        Log.error(__FUNCTION__, "| failed to create OCR pipeline:", e.what());
+        LogError << __FUNCTION__ << "| failed to create OCR pipeline:" << e.what();
         release_models();
         return false;
     }
     catch (...) {
-        Log.error(__FUNCTION__, "| failed to create OCR pipeline: unknown exception");
+        LogError << __FUNCTION__ << "| failed to create OCR pipeline: unknown exception";
         release_models();
         return false;
     }
@@ -720,16 +722,16 @@ bool OcrPack::create_pipeline(bool force_cpu)
     const bool det_inited = m_impl->det && m_impl->det->Initialized();
     const bool rec_inited = m_impl->rec && m_impl->rec->Initialized();
     const bool ocr_inited = m_impl->ocr && m_impl->ocr->Initialized();
-    Log.info("det", det_inited, "rec", rec_inited, "ocr", ocr_inited);
+    LogInfo << "det" << det_inited << "rec" << rec_inited << "ocr" << ocr_inited;
 
     if (!pipeline_ready()) {
-        Log.error(__FUNCTION__, "| OCR pipeline is not initialized");
+        LogError << __FUNCTION__ << "| OCR pipeline is not initialized";
         release_models();
         return false;
     }
 
     if (m_gpu_active && backend == InferenceBackend::WebGPU && !warmup()) {
-        Log.error(__FUNCTION__, "| WebGPU warmup failed, falling back to CPU");
+        LogError << __FUNCTION__ << "| WebGPU warmup failed, falling back to CPU";
         release_models();
         return false;
     }
@@ -748,7 +750,7 @@ bool OcrPack::warmup()
         const cv::Mat det_dummy = cv::Mat::zeros(960, 960, CV_8UC3);
         std::vector<std::array<int, 8>> boxes;
         if (!m_impl->det->Predict(det_dummy, &boxes)) {
-            Log.warn(__FUNCTION__, "| det warmup failed");
+            LogWarn << __FUNCTION__ << "| det warmup failed";
             return false;
         }
 
@@ -756,16 +758,16 @@ bool OcrPack::warmup()
         std::string text;
         float score = 0.0F;
         if (!m_impl->rec->Predict(rec_dummy, &text, &score)) {
-            Log.warn(__FUNCTION__, "| rec warmup failed");
+            LogWarn << __FUNCTION__ << "| rec warmup failed";
             return false;
         }
     }
     catch (const std::exception& e) {
-        Log.warn(__FUNCTION__, "| warmup failed:", e.what());
+        LogWarn << __FUNCTION__ << "| warmup failed:" << e.what();
         return false;
     }
     catch (...) {
-        Log.warn(__FUNCTION__, "| warmup failed: unknown exception");
+        LogWarn << __FUNCTION__ << "| warmup failed: unknown exception";
         return false;
     }
 
